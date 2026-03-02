@@ -29,12 +29,12 @@ def main():
     paths = {}
     
     # 实验 A: 传统最短路径 (不考虑风)
-    config.k_wind = 0.0
-    paths['Shortest Distance'] = planner.search(start_point, goal_point)
+ #   config.k_wind = 0.0
+ #   paths['Shortest Distance'] = planner.search(start_point, goal_point)
     
     # 实验 B: 能量与风场感知路径
-    config.k_wind = 1.0
-    paths['Energy Optimized'] = planner.search(start_point, goal_point)
+ #   config.k_wind = 1.0
+ #   paths['Energy Optimized'] = planner.search(start_point, goal_point)
     
     # 6. 可视化
     vis = Visualizer(config, estimator)

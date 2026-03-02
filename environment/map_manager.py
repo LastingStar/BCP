@@ -9,9 +9,43 @@ class MapManager:
     
     def __init__(self, config: SimulationConfig):
         self.config = config
+        
+        # 1. 先加载地图 (必须第一步！)
         self._load_map()
+        
+        # 2. 有了地图才能算梯度
         self._calculate_gradients()
+        
+        # 3. 有了地图才能算粗糙度 (新增)
+        self._generate_roughness_map()
+        
+        # 4. 最后构建插值器
         self._build_interpolators()
+
+    # 新增这个方法
+    def _generate_roughness_map(self):
+        """
+        基于海拔生成地表粗糙度 (z0)
+        物理意义：
+        - 森林 (海拔 < 2000m): z0 = 1.0m (阻力大，但能挡风)
+        - 草甸 (2000-2800m): z0 = 0.1m
+        - 雪地/岩石 (海拔 > 2800m): z0 = 0.005m (非常光滑，风很大)
+        """
+        # 1. 初始化 z0 矩阵
+        self.z0_map = np.ones_like(self.dem) * 0.1 # 默认草地
+        
+        # 2. 森林层
+        self.z0_map[self.dem < 2000.0] = 1.0 
+        
+        # 3. 雪地层
+        self.z0_map[self.dem > 2800.0] = 0.005
+        
+        # 4. 构建插值器
+        self.interp_z0 = RegularGridInterpolator((self.y, self.x), self.z0_map, bounds_error=False, fill_value=0.1)
+
+    # 新增接口
+    def get_roughness(self, x, y):
+        return float(self.interp_z0((y, x)))
 
     def _load_map(self):
         img = cv2.imread(self.config.map_path, cv2.IMREAD_GRAYSCALE)
