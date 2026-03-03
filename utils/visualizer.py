@@ -1,98 +1,130 @@
-import numpy as np
-import matplotlib.pyplot as plt
+
+"""Legacy demonstration script and wrapper for the visualizer.
+
+This file originally contained both plotting logic and a crude "crash
+simulation" demo. 目前核心的可视化功能已经迁移到
+``utils.visualizer_core.Visualizer``，建议在其它模块中直接导入并
+使用该类，而无需运行本脚本。
+
+保留此文件仅供快速手动调试或回归测试；未来可安全删除。
+"""
+
 from configs.config import SimulationConfig
+from environment.map_manager import MapManager
+from environment.wind_models import WindModelFactory
+from core.physics import PhysicsEngine
 from core.estimator import StateEstimator
-from typing import Dict, List, Tuple
+from core.planner import AStarPlanner
+from utils.visualizer_core import Visualizer
 
-class Visualizer:
-    """可视化工具：负责渲染地形、风场和路径"""
+
+def main():
+    # 1. 初始化配置
+    config = SimulationConfig()
     
-    def __init__(self, config: SimulationConfig, estimator: StateEstimator):
-        self.config = config
-        self.estimator = estimator
-        self.map = estimator.map
-
-    def plot_simulation(self, paths: Dict[str, List[Tuple[float, float]]], start: Tuple[float, float], goal: Tuple[float, float]):
+    # 2. 构建环境模块
+    map_manager = MapManager(config)
+    wind_model = WindModelFactory.create('slope', config)
+    
+    # 3. 构建代理层与物理引擎
+    estimator = StateEstimator(map_manager, wind_model, config)
+    physics = PhysicsEngine(config)
+    
+    # 4. 组装规划器
+    planner = AStarPlanner(config, estimator, physics)
+    
+    # 5. 设置起终点
+    min_x, max_x, min_y, max_y = estimator.get_bounds()
+    start_point = (min_x * 0.8, min_y * 0.8)
+    goal_point  = (max_x * 0.8, max_y * 0.8)
+    
+    paths = {}
+    
+    # --- 实验 A: 传统最短路径 ---
+    print("\n--- 正在计算传统路径 (Shortest) ---")
+    config.k_wind = 0.0
+    paths['Shortest Distance'] = planner.search(start_point, goal_point)
+    
+    # 【新增：坠机模拟逻辑】
+    # 如果传统算法返回 None (说明飞不过去)，我们就强行飞一次直线，看看在哪坠机
+    if paths['Shortest Distance'] is None:
+        print(">>> 传统路径无法通过，正在执行【坠机模拟】...")
+        crashed_path = []
         
-        # 预计算风场数据 (通用数据)
-        print("正在计算全图风场数据...")
-        step = 2 
-        X_sub = self.map.X[::step, ::step]
-        Y_sub = self.map.Y[::step, ::step]
-        speed_grid = np.zeros_like(X_sub)
-        u_grid = np.zeros_like(X_sub)
-        v_grid = np.zeros_like(X_sub)
+        # 1. 生成直线上的采样点
+        steps = 100
+        z_start = map_manager.get_altitude(*start_point) + 50
+        z_end = map_manager.get_altitude(*goal_point) + 50
         
-        rows, cols = self.map.size_y, self.map.size_x
-        for i in range(0, rows, step):
-            for j in range(0, cols, step):
-                w = self.estimator.get_wind(self.map.x[j], self.map.y[i])
-                speed_grid[i//step, j//step] = np.linalg.norm(w)
-                u_grid[i//step, j//step] = w[0]
-                v_grid[i//step, j//step] = w[1]
-
-        # ==========================================
-        # 图 1: 纯地形图 (Terrain Elevation)
-        # ==========================================
-        plt.figure("Terrain Map", figsize=(10, 8)) # 新建独立窗口
-        plt.contourf(self.map.X, self.map.Y, self.map.dem, 50, cmap='gist_earth')
-        plt.colorbar(label='Altitude (m)')
-        plt.title("Terrain Elevation Map", fontsize=14)
-        plt.xlabel("X (km)")
-        plt.ylabel("Y (km)")
-        self._plot_points(plt.gca(), start, goal)
-        plt.tight_layout()
-
-        # ==========================================
-        # 图 2: 纯风场图 (Wind Field)
-        # ==========================================
-        plt.figure("Wind Field", figsize=(10, 8)) # 新建独立窗口
-        # 背景风速
-        plt.contourf(X_sub, Y_sub, speed_grid, 50, cmap='turbo')
-        plt.colorbar(label='Wind Speed (m/s)')
-        # 流线
-        plt.streamplot(X_sub, Y_sub, u_grid, v_grid, density=1.2, color='white', linewidth=0.6, arrowsize=1.0)
-        plt.title("Wind Field (Speed & Direction)", fontsize=14)
-        plt.xlabel("X (km)")
-        plt.ylabel("Y (km)")
-        self._plot_points(plt.gca(), start, goal)
-        plt.tight_layout()
-
-        # ==========================================
-        # 图 3: 综合规划结果 (Path Planning)
-        # ==========================================
-        plt.figure("Path Planning Result", figsize=(10, 8)) # 新建独立窗口
-        # 地形打底
-        plt.contourf(self.map.X, self.map.Y, self.map.dem, 50, cmap='gist_earth', alpha=0.6)
-        # 叠加流线 (半透明蓝色)
-        plt.streamplot(X_sub, Y_sub, u_grid, v_grid, density=0.8, color=(0, 0, 1, 0.4), linewidth=0.4)
-        
-        # 绘制路径
-        has_path = False
-        for idx, (label, path) in enumerate(paths.items()):
-            if path:
-                has_path = True
-                p = np.array(path)
-                if 'Energy' in label:
-                    c, s, lw = 'lime', '-', 3
-                else:
-                    c, s, lw = 'red', '--', 2
-                
-                plt.plot(p[:, 0], p[:, 1], linestyle=s, color=c, linewidth=lw, label=label)
-        
-        if has_path:
-            plt.legend(loc='upper left', frameon=True, facecolor='black', framealpha=0.6, labelcolor='white')
+        for i in range(steps):
+            # 线性插值
+            r = i / steps
+            cx = start_point[0] + (goal_point[0] - start_point[0]) * r
+            cy = start_point[1] + (goal_point[1] - start_point[1]) * r
+            cz = z_start + (z_end - z_start) * r
             
-        plt.title("Path Planning Result", fontsize=14)
-        plt.xlabel("X (km)")
-        plt.ylabel("Y (km)")
-        self._plot_points(plt.gca(), start, goal)
-        plt.tight_layout()
+            crashed_path.append((cx, cy, cz))
+            
+            # 2. 检查物理限制
+            if i > 0:
+                prev = crashed_path[-1]
+                # 计算向量
+                move_vec = np.array([cx - prev[0], cy - prev[1]])
+                norm = np.linalg.norm(move_vec)
+                if norm > 0: move_vec = move_vec / norm * config.drone_speed
+                
+                # 获取风场 (注意高度转换)
+                ground_h = map_manager.get_altitude(cx, cy)
+                wind = estimator.get_wind(cx, cy, cz)
+                
+                # 计算功率
+                power = physics.calculate_power(move_vec, wind)
+                
+                # 3. 判定坠机条件
+                # 条件A: 撞山 (高度 < 地面)
+                if cz < ground_h:
+                    print(f"❌ 坠机警报：在 ({cx:.1f}, {cy:.1f}) 处撞山！")
+                    paths['Crashed (Terrain)'] = crashed_path # 记录尸体位置
+                    break
+                
+                # 条件B: 功率过载 (逆风太大)
+                if power == float('inf') or power > config.max_power:
+                    print(f"❌ 坠机警报：在 ({cx:.1f}, {cy:.1f}) 处电机过载烧毁！(Power > {config.max_power}W)")
+                    paths['Crashed (Overload)'] = crashed_path
+                    break
+        
+    # --- 实验 B: 能量与风场感知路径 ---
+    print("\n--- 正在计算智能路径 (Energy Aware) ---")
+    config.k_wind = 1.0
+    paths['Energy Optimized'] = planner.search(start_point, goal_point)
+    
+    # 6. 可视化 (先画剖面图，关掉后再弹地图)
+    # --- 绘制高度剖面图 (Side View) ---
+    if 'Energy Optimized' in paths and paths['Energy Optimized']:
+        path = paths['Energy Optimized']
+        path_x = [p[0] for p in path]
+        path_y = [p[1] for p in path]
+        path_z = [p[2] for p in path]
+        
+        dist = [0]
+        for i in range(1, len(path)):
+            d = np.sqrt((path_x[i]-path_x[i-1])**2 + (path_y[i]-path_y[i-1])**2)
+            dist.append(dist[-1] + d)
+            
+        terrain_z = []
+        for x, y in zip(path_x, path_y):
+            terrain_z.append(map_manager.get_altitude(x, y))
+            
+        plt.figure(figsize=(10, 4))
+        plt.fill_between(dist, 0, terrain_z, color='gray', alpha=0.5, label='Terrain')
+        plt.plot(dist, path_z, 'g-', linewidth=2, label='Drone (3D)')
+        plt.title("Flight Elevation Profile")
+        plt.legend()
+        plt.show() # <--- 这个窗口关掉后，才会显示下一张大图
 
-        # 最后统一显示所有窗口
-        plt.show()
+    # 最后显示大地图
+    vis = Visualizer(config, estimator)
+    vis.plot_simulation(paths, start_point, goal_point)
 
-    def _plot_points(self, ax, start, goal):
-        """辅助函数：画起终点"""
-        ax.scatter(*start, c='gold', s=200, marker='*', zorder=10, edgecolors='black', label='Start')
-        ax.scatter(*goal, c='red', s=200, marker='X', zorder=10, edgecolors='black', label='Goal')
+if __name__ == "__main__":
+    main()

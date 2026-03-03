@@ -59,23 +59,28 @@ class MapManager:
         
         self.dem = self.config.min_alt + (img.astype(float) / 255.0) * (self.config.max_alt - self.config.min_alt)
         self.size_y, self.size_x = self.dem.shape
-        
+
+        # 地图的真实尺寸（米）与分辨率（m/pixel）
         real_world_size_m = self.config.map_size_km * 1000.0
         self.resolution = real_world_size_m / self.size_x
-        
-        half_size = self.config.map_size_km / 2
-        self.x = np.linspace(-half_size, half_size, self.size_x)
-        self.y = np.linspace(-half_size, half_size, self.size_y)
+
+        # 将坐标统一为米（m），避免 km/m 混用
+        half_size_m = real_world_size_m / 2.0
+        self.x = np.linspace(-half_size_m, half_size_m, self.size_x)
+        self.y = np.linspace(-half_size_m, half_size_m, self.size_y)
         self.X, self.Y = np.meshgrid(self.x, self.y)
 
     def _generate_fake_map(self):
         """Fallback: 生成虚拟地形"""
         self.size_x, self.size_y = self.config.target_size
-        self.resolution = (self.config.map_size_km * 1000.0) / self.size_x
-        self.x = np.linspace(-self.config.map_size_km/2, self.config.map_size_km/2, self.size_x)
-        self.y = np.linspace(-self.config.map_size_km/2, self.config.map_size_km/2, self.size_y)
+        real_world_size_m = self.config.map_size_km * 1000.0
+        self.resolution = real_world_size_m / self.size_x
+        half_size_m = real_world_size_m / 2.0
+        self.x = np.linspace(-half_size_m, half_size_m, self.size_x)
+        self.y = np.linspace(-half_size_m, half_size_m, self.size_y)
         self.X, self.Y = np.meshgrid(self.x, self.y)
-        self.dem = 500 * np.exp(-(self.X**2 + self.Y**2) / 20) + self.config.min_alt
+        # 以米为单位构造一个高程场
+        self.dem = 500 * np.exp(-((self.X/1000.0)**2 + (self.Y/1000.0)**2) / 20) + self.config.min_alt
 
     def _calculate_gradients(self):
         """计算真实的物理坡度 (dh/dx, dh/dy)"""
@@ -96,3 +101,19 @@ class MapManager:
         
     def get_bounds(self) -> Tuple[float, float, float, float]:
         return self.x[0], self.x[-1], self.y[0], self.y[-1]
+    
+    def is_collision(self, x: float, y: float, z: float) -> bool:
+        """
+        判断三维坐标 (x, y, z) 是否在地形内部
+        z: 绝对海拔高度
+        """
+        # 获取该处的地面海拔
+        ground_alt = self.get_altitude(x, y)
+        
+        # 安全高度余量 (比如 10米)
+        safety_margin = 10.0
+        
+        # 如果当前高度 < 地面高度 + 余量，那就是撞山了
+        if z < (ground_alt + safety_margin):
+            return True
+        return False
