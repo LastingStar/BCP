@@ -117,3 +117,5 @@ class SimulationConfig:
 
     # Relative background wind speed variation ratio
     wind_speed_variation_ratio: float = 0.25
+
+    planner_verbose: bool = False

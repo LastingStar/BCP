@@ -1,136 +1,153 @@
 import numpy as np
 import matplotlib.pyplot as plt
+
 from configs.config import SimulationConfig
 from environment.map_manager import MapManager
 from environment.wind_models import WindModelFactory
 from core.physics import PhysicsEngine
 from core.estimator import StateEstimator
 from core.planner import AStarPlanner
+from core.battery_manager import BatteryManager
+from simulation.mission_executor import MissionExecutor
 from utils.visualizer_core import Visualizer
+from analysis.mission_metrics import summarize_mission_result, format_summary_text
 
-def main():
-    # 1. 初始化
+def build_system():
+    """
+    构建系统核心组件（快速演示版配置）。
+    """
     config = SimulationConfig()
+
+    # =========================
+    # M4/M5 快速演示参数
+    # 目的：先保证动态闭环跑通、可视化可生成
+    # =========================
+
+    # 动态任务执行参数
+    config.max_replans = 4
+    config.max_mission_time_s = 240.0
+    config.mission_update_interval_s = 20.0
+    config.cruise_speed_mps = 18.0
+
+    # 规划器参数（先偏保守，避免搜索空间过大）
+    config.max_steps = 12000
+
+    # 可选：如果你在 config.py 里已经加了这个开关，就关闭详细输出
+    if hasattr(config, "planner_verbose"):
+        config.planner_verbose = False
+
+    # 可选：为了让演示更容易成功，可以稍微弱化风/风险惩罚
+    # 如果你觉得路径太“拧”，可以把这些值继续调低
+    if hasattr(config, "k_wind"):
+        config.k_wind = min(config.k_wind, 0.8)
+    if hasattr(config, "risk_factor"):
+        config.risk_factor = min(config.risk_factor, 0.3)
+
+    # 电池参数（演示阶段先保证能跑通）
+    config.battery_capacity_j = max(config.battery_capacity_j, 800000.0)
+
     map_manager = MapManager(config)
-    wind_model = WindModelFactory.create('slope', config)
+    wind_model = WindModelFactory.create("slope", config)
     estimator = StateEstimator(map_manager, wind_model, config)
     physics = PhysicsEngine(config)
+    battery_manager = BatteryManager(config)
     planner = AStarPlanner(config, estimator, physics)
-    
-    # 2. 设置起终点
+    visualizer = Visualizer(config, estimator)
+
+    return config, map_manager, estimator, physics, battery_manager, planner, visualizer
+
+
+def select_start_goal(estimator: StateEstimator):
+    """
+    选择起终点（快速演示版：局部短距离任务）。
+
+    说明：
+    - 不再用全图大范围起终点
+    - 先用局部任务保证动态闭环能跑通
+    """
     min_x, max_x, min_y, max_y = estimator.get_bounds()
-    start_point = (min_x * 0.8, min_y * 0.8)
-    goal_point  = (max_x * 0.8, max_y * 0.8)
-    
-    paths = {}
-    
-    # ==========================================
-    # 实验 A: 传统算法 (傻瓜式贴地直飞)
-    # ==========================================
-    print("\n--- 正在计算传统路径 (Terrain Following) ---")
-    
-    # 模拟逻辑：在地图平面上画一条直线，但是高度始终保持离地 50米
-    # 看看它会在哪里因为功率过大而掉下来
-    crashed_path = []
-    steps = 300 # 采样点多一点，曲线更平滑
-    
-    for i in range(steps + 1):
-        # 1. 计算平面坐标 (走直线)
-        r = i / steps
-        cx = start_point[0] + (goal_point[0] - start_point[0]) * r
-        cy = start_point[1] + (goal_point[1] - start_point[1]) * r
-        
-        # 2. 计算高度 (傻瓜跟随：地面 + 50米)
-        ground_h = map_manager.get_altitude(cx, cy)
-        cz = ground_h + 50.0
-        
-        curr_pos = (cx, cy, cz)
-        crashed_path.append(curr_pos)
-        
-        # 3. 物理检查 (从第2个点开始)
-        if i > 0:
-            prev = crashed_path[-2]
-            # 【这里修正了】把 curr 改成了 curr_pos
-            curr = curr_pos 
-            
-            # 计算位移和速度向量
-            dist_xyz = np.linalg.norm(np.array(curr) - np.array(prev))
-            dist_xy = np.linalg.norm(np.array(curr[:2]) - np.array(prev[:2]))
-            
-            if dist_xyz <= 0: continue
-            
-            # 估算垂直速度 vz (爬升率)
-            time_step = dist_xy / config.drone_speed if dist_xy > 0 else 0.1
-            
-            # 这里的 move_vec 是单位向量 * 速度，用于算功率
-            v_ground_vec = np.array([cx-prev[0], cy-prev[1]]) 
-            if np.linalg.norm(v_ground_vec) > 0:
-                v_ground_vec = v_ground_vec / np.linalg.norm(v_ground_vec) * config.drone_speed
-                
-            v_z = (cz - prev[2]) / time_step
-            
-            # 获取风场
-            wind = estimator.get_wind(cx, cy, cz)
-            
-            # 计算空气动力功率
-            power_aero = physics.calculate_power(v_ground_vec, wind)
-            
-            # 计算重力功率
-            power_gravity = 10.0 * v_z # mg * vz
-            
-            total_power = power_aero + power_gravity
-            
-            # 4. 判定坠机：功率过载
-            if total_power > config.max_power:
-                print(f"❌ 传统路径在第 {i} 步坠机！爬坡功率 {total_power:.0f}W > 极限 {config.max_power}W")
-                paths['Traditional (Crashed)'] = crashed_path
-                break
-                
-    if 'Traditional (Crashed)' not in paths:
-        # 如果居然飞通了，也把它画出来
-        paths['Traditional (Success)'] = crashed_path
 
-    # ==========================================
-    # 实验 B: 智能规划 (Energy Aware)
-    # ==========================================
-    print("\n--- 正在计算智能路径 (Energy Aware) ---")
-    config.k_wind = 1.0 
-    paths['Energy Optimized'] = planner.search(start_point, goal_point)
-    
-    # ==========================================
-    # 统一可视化 (所有图一起出)
-    # ==========================================
-    
-    # 1. 弹出的剖面图
-    target_path = paths.get('Energy Optimized')
-    if target_path:
-        path_x = [p[0] for p in target_path]
-        path_y = [p[1] for p in target_path]
-        path_z = [p[2] for p in target_path]
-        
-        dist = [0]
-        terrain_z = []
-        for i in range(len(target_path)):
-            if i > 0:
-                d = np.sqrt((path_x[i]-path_x[i-1])**2 + (path_y[i]-path_y[i-1])**2)
-                dist.append(dist[-1] + d)
-            terrain_z.append(map_manager.get_altitude(path_x[i], path_y[i]))
-            
-        plt.figure("Flight Elevation Profile", figsize=(10, 4))
-        plt.fill_between(dist, 0, terrain_z, color='gray', alpha=0.5, label='Terrain')
-        plt.plot(dist, path_z, 'g-', linewidth=2, label='Drone (3D)')
-        plt.title("Flight Elevation Profile (Side View)")
-        plt.xlabel("Distance (m)")
-        plt.ylabel("Altitude (m)")
-        plt.legend()
+    # 先选一个局部范围任务，避免 3D A* 搜索空间过大
+    start_xy = (min_x + 300.0, min_y + 300.0)
+    goal_xy = (min_x + 1200.0, min_y + 900.0)
 
-    # 2. 弹出的地图窗口
-    vis = Visualizer(config, estimator)
-    vis.plot_simulation(paths, start_point, goal_point)
-    
-    # 3. 最后一次性显示所有窗口
+    # 保险：防止超出地图边界，留一点 margin
+    goal_x = min(goal_xy[0], max_x - 300.0)
+    goal_y = min(goal_xy[1], max_y - 300.0)
+    goal_xy = (goal_x, goal_y)
+
+    return start_xy, goal_xy
+
+
+def run_dynamic_mission(
+    config: SimulationConfig,
+    estimator: StateEstimator,
+    physics: PhysicsEngine,
+    battery_manager: BatteryManager,
+    planner: AStarPlanner,
+    start_xy,
+    goal_xy,
+):
+    """
+    执行动态任务（M4）。
+    """
+    executor = MissionExecutor(
+        config=config,
+        estimator=estimator,
+        physics=physics,
+        battery_manager=battery_manager,
+        planner=planner,
+    )
+
+    mission_result = executor.execute_mission(start_xy, goal_xy)
+    return mission_result
+
+
+def print_mission_summary(mission_result):
+    """
+    输出任务摘要（基于 M6 结构化指标）。
+    """
+    summary = summarize_mission_result(mission_result)
+    print("\n" + format_summary_text(summary) + "\n")
+
+
+def main():
+    # 1. 初始化系统
+    config, map_manager, estimator, physics, battery_manager, planner, visualizer = build_system()
+
+    # 2. 设置起终点
+    start_xy, goal_xy = select_start_goal(estimator)
+
+    # 3. 执行动态任务（M4）
+    print("\n--- 正在执行动态任务（Dynamic Replanning Mission）---")
+    mission_result = run_dynamic_mission(
+        config=config,
+        estimator=estimator,
+        physics=physics,
+        battery_manager=battery_manager,
+        planner=planner,
+        start_xy=start_xy,
+        goal_xy=goal_xy,
+    )
+
+    # 4. 输出任务摘要
+    print_mission_summary(mission_result)
+
+    # 5. 三路径对比可视化（M5）
+    print("--- 正在绘制三路径对比图（Mission Comparison）---")
+    visualizer.plot_mission_comparison(
+        mission_result=mission_result,
+        start_xy=start_xy,
+        goal_xy=goal_xy,
+        wind_time_s=0.0,                 # 背景风场显示时刻，可后续改成别的时刻
+        show_replanned_paths=True,       # 是否显示每次中间重规划路径
+        save_path="mission_comparison.png",
+    )
+
+    # 6. 统一显示
     print("正在显示所有图表...")
     plt.show()
+
 
 if __name__ == "__main__":
     main()
