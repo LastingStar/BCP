@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+
+# PyCharm / IDE
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test / coverage cache
+.pytest_cache/
+.coverage
+
+# Archives
+*.zip
+
+# Generated outputs
+*.gif
+*.mp4
+
+# Optional generated images
+# 如果下面这些图片是运行结果而不是输入数据，再取消注释
+# *.png
