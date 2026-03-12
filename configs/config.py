@@ -57,3 +57,63 @@ class SimulationConfig:
     
     # 启发函数中，垂直距离的权重 (爬升很难，所以垂直距离更"贵")
     z_weight: float = 2.0      # 爬 1米 等效于 平飞 5米
+
+    # =========================
+    # Dynamic mission settings
+    # =========================
+
+    # Replanning interval in seconds
+    mission_update_interval_s: float = 30.0
+
+    # Maximum number of replanning attempts
+    max_replans: int = 50
+
+    # Maximum mission duration in seconds
+    max_mission_time_s: float = 3600.0
+
+    # Cruise speed used during mission execution (m/s)
+    cruise_speed_mps: float = 12.0
+
+    # =========================
+    # Battery / energy settings
+    # =========================
+
+    # Total available battery energy (J)
+    battery_capacity_j: float = 1200000.0
+
+    # Minimum reserve energy ratio, e.g. 0.15 means keep 15% unused
+    reserve_energy_ratio: float = 0.15
+
+    # =========================
+    # Goal check settings
+    # =========================
+
+    # Goal check mode:
+    # - "3d_distance"
+    # - "xy_z_tolerance"
+    goal_check_mode: str = "3d_distance"
+
+    # 3D distance tolerance to goal (m)
+    goal_tolerance_3d_m: float = 25.0
+
+    # Horizontal distance tolerance to goal (m)
+    goal_tolerance_xy_m: float = 20.0
+
+    # Vertical distance tolerance to goal (m)
+    goal_tolerance_z_m: float = 10.0
+
+    # =========================
+    # Time-varying wind settings
+    # =========================
+
+    # Time-varying wind model type
+    wind_time_model_type: str = "smooth_periodic"
+
+    # Characteristic time scale for wind variation (s)
+    wind_time_scale_s: float = 300.0
+
+    # Maximum background wind direction variation (degrees)
+    wind_direction_variation_deg: float = 20.0
+
+    # Relative background wind speed variation ratio
+    wind_speed_variation_ratio: float = 0.25

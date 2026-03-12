@@ -27,3 +27,4 @@ Thumbs.db
 # Optional generated images
 # 如果下面这些图片是运行结果而不是输入数据，再取消注释
 # *.png
+/tests/test_mission_models.py
