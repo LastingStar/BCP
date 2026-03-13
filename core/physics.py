@@ -53,23 +53,27 @@ class PhysicsEngine:
     ) -> float:
         """
         根据地速向量与风速向量估算总功率（W）。
-
-        参数:
-        - ground_velocity_xyz: 无人机相对地面的速度向量 [vx, vy, vz]
-        - wind_velocity_xyz: 风速向量 [wx, wy, wz]
-
-        返回:
-        - total_power_w: 总功率（W）
+        P_total = P_base + P_drag + P_climb (新增重力爬升做功)
         """
         v_air_vec = ground_velocity_xyz - wind_velocity_xyz
         v_air_mag = np.linalg.norm(v_air_vec)
 
+        # 1. 基础悬停功率与空气阻力功率
         power_drag_and_base = self.power_for_speed(v_air_mag)
 
-        # 爬升功率，仅在上升时计入
-        vertical_speed = ground_velocity_xyz[2]
-        power_climb = max(0.0, self.config.drone_mass * 9.81 * vertical_speed)
+        # 2. 🌟 新增：重力爬升功率 P = m * g * v_z
+        vertical_speed = ground_velocity_xyz[2]  # 获取 Z 轴速度 (m/s)
+        power_climb = 0.0
+        
+        if vertical_speed > 0:
+            # 只有上升时才消耗额外功率克服重力
+            power_climb = self.config.drone_mass * self.config.gravity * vertical_speed
+        elif vertical_speed < 0:
+            # 下降时，保守估计势能转化为废热（旋翼机不具备高效势能回收）
+            # 或者如果你想模拟略微省电，可以减去一小部分： power_climb = 0.2 * m * g * v_z
+            power_climb = 0.0
 
+        # 总功率
         return power_drag_and_base + power_climb
 
     def find_feasible_speed(

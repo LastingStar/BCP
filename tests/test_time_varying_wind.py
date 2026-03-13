@@ -8,7 +8,8 @@ from core.estimator import StateEstimator
 
 def test_background_wind_changes_with_time():
     cfg = SimulationConfig()
-    wind_model = WindModelFactory.create("slope", cfg)
+    map_manager = MapManager(cfg)
+    wind_model = WindModelFactory.create("slope", cfg, bounds=map_manager.get_bounds())
 
     grad = (0.0, 0.0)
     z0 = 0.1
@@ -23,7 +24,7 @@ def test_background_wind_changes_with_time():
 def test_estimator_supports_time_argument():
     cfg = SimulationConfig()
     map_manager = MapManager(cfg)
-    wind_model = WindModelFactory.create("slope", cfg)
+    wind_model = WindModelFactory.create("slope", cfg, bounds=map_manager.get_bounds())
     estimator = StateEstimator(map_manager, wind_model, cfg)
 
     min_x, max_x, min_y, max_y = estimator.get_bounds()
@@ -42,7 +43,8 @@ def test_estimator_supports_time_argument():
 
 def test_wind_is_bounded_by_max_wind_speed():
     cfg = SimulationConfig()
-    wind_model = WindModelFactory.create("slope", cfg)
+    map_manager = MapManager(cfg)
+    wind_model = WindModelFactory.create("slope", cfg, bounds=map_manager.get_bounds())
 
     grad = (100.0, 100.0)  # 人为构造大梯度
     z0 = 0.1

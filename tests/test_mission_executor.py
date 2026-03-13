@@ -17,7 +17,7 @@ def test_mission_executor_runs_basic_loop():
     cfg.battery_capacity_j = 200000.0
 
     map_manager = MapManager(cfg)
-    wind_model = WindModelFactory.create("slope", cfg)
+    wind_model = WindModelFactory.create("slope", cfg, bounds=map_manager.get_bounds())
     estimator = StateEstimator(map_manager, wind_model, cfg)
     physics = PhysicsEngine(cfg)
     battery_manager = BatteryManager(cfg)
@@ -53,7 +53,7 @@ def test_mission_executor_consumes_energy():
     cfg.battery_capacity_j = 200000.0
 
     map_manager = MapManager(cfg)
-    wind_model = WindModelFactory.create("slope", cfg)
+    wind_model = WindModelFactory.create("slope", cfg, bounds=map_manager.get_bounds())
     estimator = StateEstimator(map_manager, wind_model, cfg)
     physics = PhysicsEngine(cfg)
     battery_manager = BatteryManager(cfg)
@@ -86,7 +86,7 @@ def test_mission_executor_updates_time_or_stops_with_reason():
     cfg.battery_capacity_j = 200000.0
 
     map_manager = MapManager(cfg)
-    wind_model = WindModelFactory.create("slope", cfg)
+    wind_model = WindModelFactory.create("slope", cfg, bounds=map_manager.get_bounds())
     estimator = StateEstimator(map_manager, wind_model, cfg)
     physics = PhysicsEngine(cfg)
     battery_manager = BatteryManager(cfg)

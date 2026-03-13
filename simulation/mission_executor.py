@@ -45,7 +45,7 @@ class MissionExecutor:
         """
         执行完整动态任务。
         """
-        start_z = self.estimator.get_altitude(start_xy[0], start_xy[1]) + 50.0
+        start_z = self.estimator.get_altitude(start_xy[0], start_xy[1]) + self.config.takeoff_altitude_agl
         initial_state = SimulationState(
             current_time_s=0.0,
             position_xyz=(start_xy[0], start_xy[1], start_z),
@@ -292,7 +292,7 @@ class MissionExecutor:
         """
         按配置检查是否到达终点。
         """
-        goal_z = self.estimator.get_altitude(goal_xy[0], goal_xy[1]) + 50.0
+        goal_z = self.estimator.get_altitude(goal_xy[0], goal_xy[1]) + self.config.takeoff_altitude_agl
 
         dx = current_xyz[0] - goal_xy[0]
         dy = current_xyz[1] - goal_xy[1]

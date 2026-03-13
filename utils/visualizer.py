@@ -9,6 +9,9 @@ simulation" demo. 目前核心的可视化功能已经迁移到
 保留此文件仅供快速手动调试或回归测试；未来可安全删除。
 """
 
+from matplotlib import pyplot as plt
+import numpy as np
+
 from configs.config import SimulationConfig
 from environment.map_manager import MapManager
 from environment.wind_models import WindModelFactory
@@ -24,7 +27,7 @@ def main():
     
     # 2. 构建环境模块
     map_manager = MapManager(config)
-    wind_model = WindModelFactory.create('slope', config)
+    wind_model = WindModelFactory.create('slope', config, bounds=map_manager.get_bounds())
     
     # 3. 构建代理层与物理引擎
     estimator = StateEstimator(map_manager, wind_model, config)

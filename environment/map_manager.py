@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import math
 from scipy.interpolate import RegularGridInterpolator
 from configs.config import SimulationConfig
 from typing import Tuple
@@ -116,4 +117,32 @@ class MapManager:
         # 如果当前高度 < 地面高度 + 余量，那就是撞山了
         if z < (ground_alt + safety_margin):
             return True
+        return False
+    
+    def is_in_nfz(self, x: float, y: float) -> bool:
+        """
+        判断坐标 (x, y) [单位:米] 是否在禁飞区内
+        """
+        if not self.config.enable_nfz:
+            return False
+            
+        for (cx_km, cy_km, r_km) in self.config.nfz_list_km:
+            cx, cy, r = cx_km * 1000.0, cy_km * 1000.0, r_km * 1000.0
+            dist = math.hypot(x - cx, y - cy)
+            if dist <= r:
+                return True
+        return False
+
+    def is_collision(self, x: float, y: float, z: float) -> bool:
+        """判断是否撞山或进入禁飞区"""
+        # 1. 检查禁飞区
+        if self.is_in_nfz(x, y):
+            return True
+            
+        # 2. 检查撞山
+        ground_alt = self.get_altitude(x, y)
+        safety_margin = 10.0
+        if z < (ground_alt + safety_margin):
+            return True
+            
         return False

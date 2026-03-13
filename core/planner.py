@@ -8,13 +8,18 @@ from core.physics import PhysicsEngine
 
 
 class Node:
-    def __init__(self, x: float, y: float, z: float, g: float = 0.0, h: float = 0.0, parent=None):
+    """
+    4D 时空搜索节点
+    包含空间坐标 (x,y,z) 与 预计到达时间 (time_s)
+    """
+    def __init__(self, x: float, y: float, z: float, g: float = 0.0, h: float = 0.0, time_s: float = 0.0, parent=None):
         self.x = x
         self.y = y
         self.z = z  # 绝对海拔（m）
-        self.g = g
-        self.h = h
+        self.g = g  # 从起点到当前节点的实际累积代价 (J)
+        self.h = h  # 到终点的启发式预估代价 (J)
         self.f = g + h
+        self.time_s = time_s  # 🌟 4D 核心：记录预计到达该节点时的累积时间(秒)
         self.parent = parent
 
     def __lt__(self, other):
@@ -25,7 +30,10 @@ class Node:
 
 
 class AStarPlanner:
-    """3D A* 路径规划器（内部单位：米）"""
+    """
+    4D 极值风险感知 A* 路径规划器 (4D Risk-Aware A* Planner)
+    内部坐标计算均采用国际标准单位制 (m, s, J, W)
+    """
 
     def __init__(self, config: SimulationConfig, estimator: StateEstimator, physics: PhysicsEngine):
         self.config = config
@@ -37,87 +45,128 @@ class AStarPlanner:
         # 垂直步长（m）
         self.z_step = float(self.config.z_step)
 
-        # 地图边界（x,y 单位：米）
+        # 地图边界（x, y 单位：米）
         self.min_x, self.max_x, self.min_y, self.max_y = self.estimator.get_bounds()
 
     def heuristic(self, node_pos: Tuple[float, float, float], goal_pos: Tuple[float, float, float]) -> float:
-        """返回启发值（单位：若 k_wind==0 则为米，否则为焦耳）"""
+        """
+        返回启发值（单位：焦耳 或 米）
+        🌟 包含不对称垂直权重：爬升耗电极大，下降相对轻松
+        """
         dx = node_pos[0] - goal_pos[0]
         dy = node_pos[1] - goal_pos[1]
-        dz = node_pos[2] - goal_pos[2]
+        dz = goal_pos[2] - node_pos[2]  # 目标Z - 当前Z
 
         dist_xy_m = math.hypot(dx, dy)
-        dist_z_m = abs(dz)
+        
+        # 智能垂直权重分配
+        if dz > 0:
+            # 目标比我高（需要爬升），施加配置中的高惩罚权重 (如 2.0)
+            weighted_dz = dz * self.config.z_weight
+        else:
+            # 目标比我低（需要下降），垂直代价接近真实物理距离 (权重 1.0)
+            weighted_dz = abs(dz) * 1.0
 
-        weighted_dist_m = math.sqrt(dist_xy_m ** 2 + (dist_z_m * self.config.z_weight) ** 2)
+        weighted_dist_m = math.sqrt(dist_xy_m ** 2 + weighted_dz ** 2)
 
+        # 如果不考虑风场，退化为纯几何最短路
         if self.config.k_wind == 0:
             return weighted_dist_m
 
-        # 估算能量为 距离 * 每米能耗（J/m） * 安全系数
-        return weighted_dist_m * self.physics.energy_per_meter * 1.5
+        # 估算能量: 加权距离 * 理想平飞每米能耗（J/m） * 安全系数
+        return weighted_dist_m * self.physics.energy_per_meter * self.config.heuristic_safety_factor
 
-    def calculate_cost(self, current_node: Node, next_x: float, next_y: float, next_z: float) -> float:
-        """计算从 current_node 到 (next_x,next_y,next_z) 的代价（单位：焦耳 + 风险惩罚）"""
-        # 使用米为单位
+    def calculate_cost(self, current_node: Node, next_x: float, next_y: float, next_z: float) -> Tuple[float, float]:
+        """
+        计算期望代价与飞行时间：能耗代价 + 基于 TKE 概率的风险代价
+        返回: (总期望代价 J, 该路段耗时 s)
+        """
+        
+        # --- 1. 禁飞区 (NFZ) 与 地形碰撞检测 ---
+        if self.estimator.map.is_collision(next_x, next_y, next_z):
+            return float('inf'), 0.0
+
         dist_xy_m = math.hypot(next_x - current_node.x, next_y - current_node.y)
         dist_z_m = next_z - current_node.z
         total_dist_m = math.sqrt(dist_xy_m ** 2 + dist_z_m ** 2)
 
-        # k_wind==0 时退化为距离代价（米）
         if self.config.k_wind == 0:
-            return total_dist_m
+            # 传统无风模式：代价等于物理距离，耗时靠设定的巡航速度算
+            return total_dist_m, (total_dist_m / self.config.drone_speed)
 
-        # 时间估算（秒）
+        # --- 2. 🌟 4D 时间推演引擎 ---
         v_total = float(self.config.drone_speed)
-        if v_total <= 0:
-            return float('inf')
-        time_s = total_dist_m / v_total
-        if time_s <= 0:
-            return float('inf')
+        segment_time_s = total_dist_m / v_total
+        
+        # 预测未来：计算无人机真正到达前方网格时的“未来时间”
+        arrival_time_s = current_node.time_s + segment_time_s
 
-        # 垂直速度
-        v_z = dist_z_m / time_s
-
-        # 水平地速分量 (m/s)
-        v_xy = dist_xy_m / time_s
+        # 计算三维地速向量
+        v_z = dist_z_m / segment_time_s
+        v_xy = dist_xy_m / segment_time_s
         move_vec_xy = np.array([next_x - current_node.x, next_y - current_node.y], dtype=float)
         if np.linalg.norm(move_vec_xy) > 0:
             move_vec_xy = move_vec_xy / np.linalg.norm(move_vec_xy)
         v_ground_xy = move_vec_xy * v_xy
+        v_ground_xyz = np.array([v_ground_xy[0], v_ground_xy[1], v_z])
 
-        # 风速：传入 AGL（米）
+        # 获取离地高度 AGL
         agl = next_z - self.estimator.get_altitude(next_x, next_y)
-        if agl < 0:
-            # 在地形以下，不可行
-            return float('inf')
-        wind_vec = self.estimator.get_wind(next_x, next_y, agl)
+        if agl < 0: 
+            return float('inf'), 0.0
+        
+        # --- 3. 物理耗能计算 (基于未来的风场) ---
+        # 🌟 把预测的未来时间 (arrival_time_s) 传给气象模型！
+        wind_vec_2d = self.estimator.get_wind(next_x, next_y, next_z, t_s=arrival_time_s)
+        wind_vec_3d = np.array([wind_vec_2d[0], wind_vec_2d[1], 0.0])
 
-        # 空气动力功率（W）
-        power_aero = self.physics.calculate_power(v_ground_xy, wind_vec)
-        if power_aero == float('inf'):
-            return float('inf')
+        total_power = self.physics.estimate_power_from_vectors(v_ground_xyz, wind_vec_3d)
+        if total_power > self.config.max_power:
+            # 超出电机最大功率（逆风太强爬升不动），视为不可行
+            return float('inf'), 0.0
 
-        # 重力功率近似（W）: m*g*v_z （这里 m 和 g 可在 config 中扩展）
-        power_gravity = 10.0 * v_z
+        energy_joules = total_power * segment_time_s
 
-        total_power = power_aero + power_gravity
-        if total_power < self.config.base_power:
-            total_power = self.config.base_power
+        # --- 4. 极值概率风险模型 (Risk-Sensitive MDP) ---
+        v_ground_mag = np.linalg.norm(v_ground_xyz)
+        
+        # 🌟 把预测的未来时间传给极值风险模型，评估未来那个时刻当地的坠机概率！
+        p_crash, tke = self.estimator.get_risk(next_x, next_y, next_z, v_ground_mag, t_s=arrival_time_s)
+        
+        # 风险代价 = 发生致命事故的惩罚 * 发生概率
+        risk_cost = self.config.fatal_crash_penalty_j * p_crash * self.config.k_wind
 
-        energy_joules = total_power * time_s
+        # 总期望代价
+        expected_total_cost = energy_joules + risk_cost
 
-        # 风险代价
-        risk_cost = self.estimator.get_risk(next_x, next_y) * self.config.risk_factor * self.config.k_wind
+        # --- 可视化 AI 内部决策过程 ---
+        # 仅在遇到高风险(P_crash>1%) 时偶尔打印，避免日志刷屏
+        if p_crash > 0.01 and np.random.rand() < 0.02:
+            print(f"\n[AI 4D预测] 预计在 T={arrival_time_s:.1f}s 抵达高危空域！坐标:({next_x/1000:.1f}km, {next_y/1000:.1f}km, 海拔{next_z:.0f}m)")
+            print(f" ├─ 微气象分析 : TKE = {tke:.2f} m²/s² (受地形/尾流/切变综合影响)")
+            print(f" ├─ 极值风险模型 : 坠机概率 P_crash = {p_crash*100:.2f}%")
+            print(f" └─ MDP 代价转化 : 正常能耗 {energy_joules:.0f} J, 附加致命惩罚 {risk_cost:.0f} J")
+            if risk_cost > energy_joules * 2:
+                print(f" >>> 决策结论: 期望风险代价过高，4D A* 将主动变道绕行！")
 
-        return energy_joules + risk_cost
+        return expected_total_cost, segment_time_s
 
-    def search(self, start_pos: Tuple[float, float], goal_pos: Tuple[float, float]) -> Optional[List[Tuple[float, float, float]]]:
-        # 初始化起点/终点高度（海拔，m）
-        start_z = self.estimator.get_altitude(start_pos[0], start_pos[1]) + 50.0
-        goal_z = self.estimator.get_altitude(goal_pos[0], goal_pos[1]) + 50.0
+    def search(
+        self, 
+        start_pos: Tuple[float, float], 
+        goal_pos: Tuple[float, float], 
+        start_time_s: float = 0.0
+    ) -> Optional[List[Tuple[float, float, float]]]:
+        """
+        执行 4D A* 搜索。
+        start_time_s: 任务当前的绝对时间（用于动态重规划时接续风暴状态）
+        """
+        # 初始化起点/终点绝对海拔（m）
+        start_z = self.estimator.get_altitude(start_pos[0], start_pos[1]) + self.config.takeoff_altitude_agl
+        goal_z = self.estimator.get_altitude(goal_pos[0], goal_pos[1]) + self.config.takeoff_altitude_agl
 
-        start_node = Node(start_pos[0], start_pos[1], start_z, g=0.0, h=0.0)
+        # 🌟 实例化起点，并打上初始时间戳
+        start_node = Node(start_pos[0], start_pos[1], start_z, g=0.0, h=0.0, time_s=start_time_s)
         start_node.h = self.heuristic(start_node.get_pos(), (goal_pos[0], goal_pos[1], goal_z))
 
         open_list: List[Node] = []
@@ -128,7 +177,7 @@ class AStarPlanner:
         arrival_dist_xy = self.step_size
         arrival_dist_z = self.z_step
 
-        print(f"🚀 3D 搜索开始... 起点Z:{start_z:.1f}m -> 终点Z:{goal_z:.1f}m")
+        print(f"🚀 4D 时空搜索启动... 起点Z:{start_z:.1f}m -> 终点Z:{goal_z:.1f}m (当前任务起飞时间: {start_time_s:.1f}s)")
 
         while open_list and steps < self.config.max_steps:
             steps += 1
@@ -138,10 +187,10 @@ class AStarPlanner:
             d_xy = math.hypot(current_node.x - goal_pos[0], current_node.y - goal_pos[1])
             d_z = abs(current_node.z - goal_z)
             if d_xy < arrival_dist_xy and d_z < arrival_dist_z * 2:
-                print(f"✅ 3D寻路成功！耗时步数: {steps}, 总代价: {current_node.g:.2f}")
+                print(f"✅ 4D 寻路成功！耗时步数: {steps}, 路线总期望代价: {current_node.g:.2f} J, 预计抵达时间: {current_node.time_s:.1f} s")
                 return self._reconstruct_path(current_node)
 
-            # 网格索引（floor 更稳定）
+            # 三维网格索引，用于闭集判断（防止走回头路）
             grid_idx = (
                 int(math.floor((current_node.x - self.min_x) / self.step_size)),
                 int(math.floor((current_node.y - self.min_y) / self.step_size)),
@@ -151,7 +200,7 @@ class AStarPlanner:
                 continue
             closed_set.add(grid_idx)
 
-            # 26 邻域扩展
+            # 26 邻域扩展 (全空间 3D 探测)
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     for dz in [-1, 0, 1]:
@@ -162,32 +211,43 @@ class AStarPlanner:
                         next_y = current_node.y + dy * self.step_size
                         next_z = current_node.z + dz * self.z_step
 
-                        # 边界检查（米）
+                        # 地图边界硬核检查
                         if not (self.min_x <= next_x <= self.max_x and self.min_y <= next_y <= self.max_y):
                             continue
 
+                        # 高度上下限检查
                         terrain_alt = self.estimator.get_altitude(next_x, next_y)
-                        # 限制相对于地形的最大高度（m）
                         if next_z > terrain_alt + self.config.max_ceiling:
                             continue
-                        # 离地至少 10 m
-                        if next_z < terrain_alt + 10.0:
+                        if next_z < terrain_alt + 10.0:  # 必须离地 10m 以上，防止擦地撞击
                             continue
 
-                        move_cost = self.calculate_cost(current_node, next_x, next_y, next_z)
+                        # 🌟 调用 4D 代价函数，同时接收期望代价与分段耗时
+                        move_cost, segment_time_s = self.calculate_cost(current_node, next_x, next_y, next_z)
+                        
                         if move_cost == float('inf'):
                             continue
 
+                        # 🌟 状态更新：累加代价、累加时间、计算新启发值
                         new_g = current_node.g + move_cost
+                        new_time_s = current_node.time_s + segment_time_s 
                         new_h = self.heuristic((next_x, next_y, next_z), (goal_pos[0], goal_pos[1], goal_z))
-                        heapq.heappush(open_list, Node(next_x, next_y, next_z, g=new_g, h=new_h, parent=current_node))
+                        
+                        # 压入优先队列
+                        heapq.heappush(open_list, Node(
+                            x=next_x, y=next_y, z=next_z, 
+                            g=new_g, h=new_h, 
+                            time_s=new_time_s, 
+                            parent=current_node
+                        ))
 
-        print("❌ 3D 搜索失败：步数耗尽。")
+        print("❌ 4D 搜索失败：步数耗尽，未找到安全通行路径。")
         return None
 
     def _reconstruct_path(self, node: Node) -> List[Tuple[float, float, float]]:
+        """回溯节点链条，生成 3D 航点坐标列表"""
         path: List[Tuple[float, float, float]] = []
         while node:
             path.append((node.x, node.y, node.z))
             node = node.parent
-        return path[::-1]
+        return path[::-1]  # 反转列表，确保从起点到终点
