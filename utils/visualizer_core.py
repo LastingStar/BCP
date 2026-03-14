@@ -1,3 +1,13 @@
+"""
+可视化核心模块
+
+此模块提供任务结果的可视化功能，包括地形图、风场图、
+路径规划结果和剖面图的绘制。支持多种图表类型的组合输出。
+
+主要组件：
+- Visualizer: 可视化器主类
+"""
+
 import sys, os
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
@@ -10,6 +20,7 @@ from configs.config import SimulationConfig
 from core.estimator import StateEstimator
 from models.mission_models import MissionResult
 from typing import Dict, List, Tuple, Optional
+from scipy.interpolate import splprep, splev
 
 
 class Visualizer:
@@ -50,34 +61,48 @@ class Visualizer:
         ax.scatter(*goal, c='red', s=180, marker='X', zorder=10,
                    edgecolors='black', label='Goal')
 
+    def _smooth_path(self, arr: np.ndarray, s: float = 2.0) -> np.ndarray:
+        """🌟 B样条曲线平滑滤波，消除 A* 网格的折线感"""
+        if len(arr) < 4:  # 点太少无法平滑，直接返回
+            return arr
+        # 提取 x, y
+        x, y = arr[:, 0], arr[:, 1]
+        # B样条插值 (s为平滑因子，越大越圆滑)
+        tck, u = splprep([x, y], s=s)
+        # 生成更密集的平滑点 (比如 300 个点)
+        u_new = np.linspace(0, 1.0, 300)
+        x_new, y_new = splev(u_new, tck)
+        return np.column_stack((x_new, y_new))
+
     def _path_xy_to_km(self, path_xy: List[Tuple[float, float]]) -> Optional[np.ndarray]:
-        """将二维路径转为 km 单位数组。"""
-        if not path_xy:
-            return None
+        if not path_xy: return None
         arr = np.array(path_xy, dtype=float)
-        if arr.ndim != 2 or arr.shape[1] != 2:
-            return None
-        return arr / 1000.0
+        if arr.ndim != 2 or arr.shape[1] != 2: return None
+        # 转化为 km 并平滑
+        return self._smooth_path(arr / 1000.0)
 
     def _path_xyz_to_xy_km(self, path_xyz: List[Tuple[float, float, float]]) -> Optional[np.ndarray]:
-        """将三维路径投影到 XY 平面，并转为 km 单位数组。"""
-        if not path_xyz:
-            return None
+        if not path_xyz: return None
         arr = np.array(path_xyz, dtype=float)
-        if arr.ndim != 2 or arr.shape[1] < 2:
-            return None
-        return arr[:, :2] / 1000.0
+        if arr.ndim != 2 or arr.shape[1] < 2: return None
+        # 取 XY 转为 km 并平滑
+        return self._smooth_path(arr[:, :2] / 1000.0)
 
     def _draw_nfz(self, ax):
         """辅助方法：在地图上绘制禁飞区 (No-Fly Zones)"""
         if not self.config.enable_nfz:
             return
             
-        for (cx_km, cy_km, r_km) in self.config.nfz_list_km:
+        # 检查是否已经添加过图例，避免重复
+        has_nfz_legend = any('No-Fly Zone' in str(h.get_label()) for h in ax.get_legend_handles_labels()[0])
+        
+        for i, (cx_km, cy_km, r_km) in enumerate(self.config.nfz_list_km):
+            # 只有第一个NFZ添加图例标签
+            label = 'No-Fly Zone' if not has_nfz_legend and i == 0 else None
             circle = patches.Circle(
                 (cx_km, cy_km), r_km, 
                 linewidth=2, edgecolor='red', facecolor='red', 
-                alpha=0.3, hatch='//', zorder=5, label='No-Fly Zone'
+                alpha=0.3, hatch='//', zorder=5, label=label
             )
             ax.add_patch(circle)
             ax.text(cx_km, cy_km, 'NFZ', color='darkred', 
@@ -89,17 +114,22 @@ class Visualizer:
         if not self.config.enable_storms or not hasattr(self.estimator.wind, 'storm_manager'):
             return
             
-        for storm in self.estimator.wind.storm_manager.storms:
+        # 检查是否已经添加过风暴图例，避免重复
+        has_storm_legend = any('Storm' in str(h.get_label()) for h in ax.get_legend_handles_labels()[0])
+            
+        for i, storm in enumerate(self.estimator.wind.storm_manager.storms):
             cx_km, cy_km = storm.center_xy[0] / 1000.0, storm.center_xy[1] / 1000.0
             r_km = storm.radius_m / 1000.0
             vx_km = storm.velocity_xy[0] / 1000.0
             vy_km = storm.velocity_xy[1] / 1000.0
             
             # 1. 画初始位置 (t=0 的蓝色半透明圈)
+            # 只有第一个风暴添加图例标签
+            label = 'Storm (t=0)' if not has_storm_legend and i == 0 else None
             circle = patches.Circle(
                 (cx_km, cy_km), r_km, 
                 linewidth=1.5, edgecolor='navy', facecolor='navy', 
-                alpha=0.25, zorder=4, label='Storm (t=0)'
+                alpha=0.25, zorder=4, label=label
             )
             ax.add_patch(circle)
             
@@ -113,7 +143,7 @@ class Visualizer:
                         zorder=5)
             
             # 加个雷暴小图标/文字
-            ax.text(cx_km, cy_km, '⛈️ Storm', color='midnightblue', fontsize=11, ha='center', va='center', zorder=6)
+            ax.text(cx_km, cy_km, 'Storm', color='midnightblue', fontsize=11, ha='center', va='center', zorder=6)
 
     def plot_simulation(
         self,
@@ -234,9 +264,6 @@ class Visualizer:
         
         plt.show()
 
-    # =========================================================================
-    # 🌟 核心修复：把你之前丢失的 plot_mission_comparison 完整补回到了这里！
-    # =========================================================================
     def plot_mission_comparison(
         self,
         mission_result: MissionResult,
@@ -266,8 +293,6 @@ class Visualizer:
         cbar = plt.colorbar(contour, ax=ax1, pad=0.02)
         cbar.set_label("Altitude (m)")
         self._draw_nfz(ax1)
-        # 🌟 渲染禁飞区
-        self._draw_nfz(ax1)      # (或者 ax1, ax2, ax3 根据上下文)
         # 🌟 渲染移动风暴及轨迹
         self._draw_storms_static(ax1, duration_s=400.0)  # 预测400秒后的走势
 
@@ -309,6 +334,8 @@ class Visualizer:
         cbar2.set_label("Wind Speed (m/s)")
         ax2.streamplot(X_sub / 1000.0, Y_sub / 1000.0, u_grid, v_grid, density=1.0, color='white', linewidth=0.8, arrowsize=1.2)
         self._draw_nfz(ax2)
+        # 🌟 添加风暴绘制
+        self._draw_storms_static(ax2, duration_s=400.0)
         self._plot_points(ax2, (start_xy[0] / 1000.0, start_xy[1] / 1000.0), (goal_xy[0] / 1000.0, goal_xy[1] / 1000.0))
         ax2.set_title("Wind Field RGB", fontsize=14)
         ax2.set_xlabel("X (km)")

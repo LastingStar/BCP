@@ -1,7 +1,17 @@
-import sys, os
-project_root = os.path.dirname(os.path.abspath(__file__))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+"""
+无人机路径规划仿真主程序
+
+此模块是仿真系统的入口点，负责初始化系统组件、设置任务参数、
+执行动态路径规划任务，并生成可视化结果。
+
+主要功能：
+- 系统组件构建和初始化
+- 起终点选择
+- 动态任务执行（包含重新规划）
+- 任务结果可视化和摘要输出
+"""
+
+
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,22 +31,16 @@ def build_system():
     """构建系统核心组件"""
     config = SimulationConfig()
 
-    # M4/M5 快速演示参数
-    config.max_replans = 4
-    config.max_mission_time_s = 240.0
-    config.mission_update_interval_s = 20.0
-    config.cruise_speed_mps = 18.0
-    config.max_steps = 12000
-
-    if hasattr(config, "planner_verbose"):
-        config.planner_verbose = False
-
-    if hasattr(config, "k_wind"):
-        config.k_wind = min(config.k_wind, 0.8)
-    if hasattr(config, "risk_factor"):
-        config.risk_factor = min(config.risk_factor, 0.3)
-
-    config.battery_capacity_j = max(config.battery_capacity_j, 800000.0)
+    # 应用演示参数设置
+    config.max_replans = config.demo_max_replans
+    config.max_mission_time_s = config.demo_max_mission_time_s
+    config.mission_update_interval_s = config.demo_mission_update_interval_s
+    config.cruise_speed_mps = config.demo_cruise_speed_mps
+    config.max_steps = config.demo_max_steps
+    config.planner_verbose = config.demo_planner_verbose
+    config.k_wind = min(config.k_wind, config.demo_k_wind)
+    config.risk_factor = min(config.risk_factor, config.demo_risk_factor)
+    config.battery_capacity_j = max(config.battery_capacity_j, config.demo_battery_capacity_j)
 
     map_manager = MapManager(config)
     wind_model = WindModelFactory.create(config.wind_model_type, config, bounds=map_manager.get_bounds())
@@ -49,12 +53,12 @@ def build_system():
     return config, map_manager, estimator, physics, battery_manager, planner, visualizer
 
 
-def select_start_goal(estimator: StateEstimator):
+def select_start_goal(estimator: StateEstimator, config: SimulationConfig):
     """选择起终点（局部短距离任务）"""
     min_x, max_x, min_y, max_y = estimator.get_bounds()
 
-    start_xy = (min_x + 300.0, min_y + 300.0)
-    goal_xy = (min_x + 1200.0, min_y + 900.0)
+    start_xy = (min_x + config.start_offset_x_m, min_y + config.start_offset_y_m)
+    goal_xy = (min_x + config.goal_offset_x_m, min_y + config.goal_offset_y_m)
 
     goal_x = min(goal_xy[0], max_x - 300.0)
     goal_y = min(goal_xy[1], max_y - 300.0)
@@ -86,7 +90,7 @@ def main():
     config, map_manager, estimator, physics, battery_manager, planner, visualizer = build_system()
 
     # 2. 设置起终点
-    start_xy, goal_xy = select_start_goal(estimator)
+    start_xy, goal_xy = select_start_goal(estimator, config)
 
     # 3. 执行动态任务（4D 预测规划）
     print("\n--- 正在执行动态任务（4D Dynamic Replanning Mission）---")

@@ -1,3 +1,14 @@
+"""
+无人机路径规划器模块
+
+此模块实现了基于A*算法的三维路径规划器，考虑能量消耗和风险成本。
+支持静态规划和动态重新规划功能。
+
+主要组件：
+- Node: 搜索节点类
+- AStarPlanner: A*规划器主类
+"""
+
 import heapq
 import math
 import numpy as np

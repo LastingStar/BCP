@@ -1,3 +1,15 @@
+"""
+任务模型定义模块
+
+此模块定义了任务执行过程中使用的各种数据模型和状态类，
+包括路径规划结果、仿真状态和任务结果等数据结构。
+
+主要数据类：
+- PathPlanResult: 路径规划结果
+- SimulationState: 仿真状态
+- MissionResult: 任务结果
+"""
+
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 

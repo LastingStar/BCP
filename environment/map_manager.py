@@ -4,6 +4,7 @@ import math
 from scipy.interpolate import RegularGridInterpolator
 from configs.config import SimulationConfig
 from typing import Tuple
+from scipy.ndimage import gaussian_filter
 
 class MapManager:
     """地图管理器：仅负责地形高程(DEM)、梯度计算与坐标映射"""
@@ -84,10 +85,15 @@ class MapManager:
         self.dem = 500 * np.exp(-((self.X/1000.0)**2 + (self.Y/1000.0)**2) / 20) + self.config.min_alt
 
     def _calculate_gradients(self):
-        """计算真实的物理坡度 (dh/dx, dh/dy)"""
+        """计算真实的物理坡度 (dh/dx, dh/dy)，并应用高斯平滑滤波"""
         self.grad_y, self.grad_x = np.gradient(self.dem)
         self.grad_y /= self.resolution
         self.grad_x /= self.resolution
+        
+        # 🌟 PPO 核心优化：对地形梯度进行二维高斯平滑滤波
+        # sigma=2.0 意味着在几个网格的范围内把突变的坡度风抹平，保证导数连续
+        self.grad_x = gaussian_filter(self.grad_x, sigma=2.0)
+        self.grad_y = gaussian_filter(self.grad_y, sigma=2.0)
 
     def _build_interpolators(self):
         self.interp_h = RegularGridInterpolator((self.y, self.x), self.dem, bounds_error=False, fill_value=0)

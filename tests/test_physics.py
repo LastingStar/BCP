@@ -1,3 +1,13 @@
+"""
+物理引擎测试模块
+
+此模块测试物理引擎的功率计算和速度优化功能，验证空气动力学
+模型在不同风速和负载条件下的正确性。
+
+测试类：
+- PhysicsEngineTests: 物理引擎测试
+"""
+
 import numpy as np
 import unittest
 from configs.config import SimulationConfig
@@ -10,11 +20,11 @@ class PhysicsEngineTests(unittest.TestCase):
         self.engine = PhysicsEngine(self.config)
 
     def test_power_for_speed_no_wind(self):
-        # with zero wind, power should equal drag + base
+        # 无风时，功率应等于阻力 + 基础功率
         v_air = 10.0
         p = self.engine.power_for_speed(v_air)
         self.assertGreater(p, 0)
-        # check monotonic increase
+        # 检查单调递增
         self.assertGreater(self.engine.power_for_speed(v_air + 1), p)
 
     def test_find_feasible_speed_feasible(self):
@@ -26,8 +36,8 @@ class PhysicsEngineTests(unittest.TestCase):
         self.assertLessEqual(power, self.config.max_power)
 
     def test_find_feasible_speed_unfeasible(self):
-        # use an extreme headwind that would push required airspeed
-        # far beyond the drone's max power capability
+        # 使用极端的逆风，会将所需空速推到
+        # 远超无人机最大功率能力
         v_ground = np.array([5.0, 0.0])
         v_wind = np.array([200.0, 0.0])  # >> max_power threshold
         feasible, power, used = self.engine.find_feasible_speed(v_ground, v_wind)

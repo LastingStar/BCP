@@ -1,3 +1,13 @@
+"""
+任务动画构建模块
+
+此模块提供任务执行过程的动画可视化功能，包括无人机轨迹、
+风场演化和时间推进的动态展示。
+
+主要组件：
+- MissionAnimator: 任务动画器
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation

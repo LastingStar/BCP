@@ -1,3 +1,13 @@
+"""
+任务执行器模块
+
+此模块负责执行无人机任务，包括动态路径规划、电池管理、
+重新规划逻辑和任务状态跟踪。支持实时风场变化和能量约束。
+
+主要组件：
+- MissionExecutor: 任务执行器主类
+"""
+
 import math
 import numpy as np
 from typing import List, Tuple, Optional
@@ -150,14 +160,36 @@ class MissionExecutor:
         use_wind: bool,
     ) -> Optional[List[Point3D]]:
         """
-        单次规划。通过临时切换 k_wind 控制是否启用风代价。
+        单次规划，带有【自适应降级容错机制】
         """
         original_k_wind = self.config.k_wind
+        original_penalty = self.config.fatal_crash_penalty_j
+        
         self.config.k_wind = 1.0 if use_wind else 0.0
+        
         try:
+            # 第一次尝试：在绝对安全的高标准下规划
             path = self.planner.search(start_xy, goal_xy)
+            
+            # 🌟 如果失败了，触发降级容错机制！
+            if path is None and use_wind:
+                print("\n⚠️ [系统告警] 绝对安全路径规划失败 (被禁飞区或极端气象阻塞)！")
+                print("🔄 [容错机制] 正在降低风险阈值，尝试执行高风险突防路线...")
+                
+                # 将坠机惩罚降低到原来的 1/3，让无人机变得“更勇敢”
+                self.config.fatal_crash_penalty_j = original_penalty * 0.33
+                path = self.planner.search(start_xy, goal_xy)
+                
+                if path:
+                    print("✅ [容错成功] 已生成高风险备用航线！请密切关注飞行姿态。")
+                else:
+                    print("❌ [容错失败] 气象条件过于极端，强制禁飞。")
+                    
         finally:
+            # 无论成功失败，恢复原来的配置参数
             self.config.k_wind = original_k_wind
+            self.config.fatal_crash_penalty_j = original_penalty
+            
         return path
 
     def _advance_along_path(
