@@ -104,6 +104,7 @@ class MissionExecutor:
                 current_xy,
                 goal_xy,
                 use_wind=True,
+                start_time_s=state.current_time_s,
             )
 
             if planned_path is None or len(planned_path) < 2:
@@ -158,9 +159,11 @@ class MissionExecutor:
         start_xy: Tuple[float, float],
         goal_xy: Tuple[float, float],
         use_wind: bool,
+        start_time_s: float = 0.0,  # 🌟 修复点：这里给了默认值 0.0
     ) -> Optional[List[Point3D]]:
         """
-        单次规划，带有【自适应降级容错机制】
+        单次规划。通过临时切换 k_wind 控制是否启用风代价。
+        带有【自适应降级容错机制】
         """
         original_k_wind = self.config.k_wind
         original_penalty = self.config.fatal_crash_penalty_j
@@ -168,17 +171,19 @@ class MissionExecutor:
         self.config.k_wind = 1.0 if use_wind else 0.0
         
         try:
-            # 第一次尝试：在绝对安全的高标准下规划
-            path = self.planner.search(start_xy, goal_xy)
+            # 🌟 修复点：明确把 start_time_s 传给 planner
+            path = self.planner.search(start_xy, goal_xy, start_time_s=start_time_s)
             
-            # 🌟 如果失败了，触发降级容错机制！
+            # 容错降级机制
             if path is None and use_wind:
                 print("\n⚠️ [系统告警] 绝对安全路径规划失败 (被禁飞区或极端气象阻塞)！")
                 print("🔄 [容错机制] 正在降低风险阈值，尝试执行高风险突防路线...")
                 
                 # 将坠机惩罚降低到原来的 1/3，让无人机变得“更勇敢”
                 self.config.fatal_crash_penalty_j = original_penalty * 0.33
-                path = self.planner.search(start_xy, goal_xy)
+                
+                # 🌟 修复点：这里也要传 start_time_s
+                path = self.planner.search(start_xy, goal_xy, start_time_s=start_time_s)
                 
                 if path:
                     print("✅ [容错成功] 已生成高风险备用航线！请密切关注飞行姿态。")
