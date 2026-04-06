@@ -1,23 +1,18 @@
 """
-任务执行器模块
-
-此模块负责执行无人机任务，包括动态路径规划、电池管理、
-重新规划逻辑和任务状态跟踪。支持实时风场变化和能量约束。
-
-主要组件：
-- MissionExecutor: 任务执行器主类
+Single-drone mission executor used by planning and RL ablation experiments.
 """
 
 import math
+from typing import List, Optional, Tuple
+
 import numpy as np
-from typing import List, Tuple, Optional
 
 from configs.config import SimulationConfig
+from core.battery_manager import BatteryManager
 from core.estimator import StateEstimator
 from core.physics import PhysicsEngine
-from core.battery_manager import BatteryManager
 from core.planner import AStarPlanner
-from models.mission_models import SimulationState, MissionResult, PathPlanResult
+from models.mission_models import MissionResult, PathPlanResult, SimulationState
 
 
 Point3D = Tuple[float, float, float]
@@ -25,12 +20,7 @@ Point3D = Tuple[float, float, float]
 
 class MissionExecutor:
     """
-    动态任务执行器：
-    - 初始规划
-    - 沿路径飞行固定时间
-    - 更新时间 / 位置 / 电量
-    - 周期重规划
-    - 直到到达或失败
+    Dynamic mission executor for the legacy single-drone pipeline.
     """
 
     def __init__(
@@ -52,53 +42,65 @@ class MissionExecutor:
         start_xy: Tuple[float, float],
         goal_xy: Tuple[float, float],
     ) -> MissionResult:
-        """
-        执行完整动态任务。
-        """
         start_z = self.estimator.get_altitude(start_xy[0], start_xy[1]) + self.config.takeoff_altitude_agl
-        initial_state = SimulationState(
+        state = SimulationState(
             current_time_s=0.0,
             position_xyz=(start_xy[0], start_xy[1], start_z),
             remaining_energy_j=self.config.battery_capacity_j,
             traveled_path_xyz=[(start_xy[0], start_xy[1], start_z)],
-            replans_count=0,
-            total_energy_used_j=0.0,
-            is_goal_reached=False,
-            is_mission_failed=False,
-            failure_reason=None,
         )
 
-        # 1) 记录三类路径中的前两类
         initial_no_wind_path = self._plan_once(start_xy, goal_xy, use_wind=False)
         initial_wind_path = self._plan_once(start_xy, goal_xy, use_wind=True)
-
         replanned_paths_xyz: List[List[Point3D]] = []
+        time_history_s: List[float] = []
+        power_history_w: List[float] = []
+        risk_history: List[float] = []
 
-        state = initial_state
+        if self.config.disable_periodic_replan:
+            if not initial_wind_path or len(initial_wind_path) < 2:
+                state.is_mission_failed = True
+                state.failure_reason = "planner failed to find a path"
+            else:
+                state = self._advance_along_path(
+                    state=state,
+                    path_xyz=initial_wind_path,
+                    delta_t_s=self.config.max_mission_time_s,
+                    time_history_s=time_history_s,
+                    power_history_w=power_history_w,
+                    risk_history=risk_history,
+                )
+                state.is_goal_reached = self._check_goal_reached(state.position_xyz, goal_xy)
+                if not state.is_goal_reached and not state.is_mission_failed:
+                    state.is_mission_failed = True
+                    state.failure_reason = "goal_not_reached_without_replan"
+            return self._build_result(
+                state=state,
+                initial_no_wind_path=initial_no_wind_path,
+                initial_wind_path=initial_wind_path,
+                replanned_paths_xyz=replanned_paths_xyz,
+                time_history_s=time_history_s,
+                power_history_w=power_history_w,
+                risk_history=risk_history,
+            )
 
-        # 2) 动态执行主循环
         while True:
-            # 2.1 终止条件检查
             if self._check_goal_reached(state.position_xyz, goal_xy):
                 state.is_goal_reached = True
                 break
-
             if state.replans_count >= self.config.max_replans:
                 state.is_mission_failed = True
                 state.failure_reason = "maximum replans exceeded"
                 break
-
             if state.current_time_s >= self.config.max_mission_time_s:
                 state.is_mission_failed = True
                 state.failure_reason = "maximum mission time exceeded"
                 break
-
             if state.remaining_energy_j <= self.battery_manager.get_min_reserve_energy_j():
                 state.is_mission_failed = True
                 state.failure_reason = "battery below reserve threshold"
                 break
 
-            # 2.2 以当前位置重新规划
             current_xy = (state.position_xyz[0], state.position_xyz[1])
             planned_path = self._plan_once(
                 current_xy,
@@ -106,41 +108,54 @@ class MissionExecutor:
                 use_wind=True,
                 start_time_s=state.current_time_s,
             )
-
-            if planned_path is None or len(planned_path) < 2:
+            if not planned_path or len(planned_path) < 2:
                 state.is_mission_failed = True
                 state.failure_reason = "planner failed to find a path"
                 break
 
             replanned_paths_xyz.append(planned_path)
-
-            # 2.3 估计这条新路径理论能耗是否可行
             estimated_path_energy_j = self.physics.estimate_path_energy(
                 planned_path,
                 wind_sampler=lambda x, y, z: self._sample_wind_3d(x, y, z, state.current_time_s),
                 cruise_speed_mps=self.config.cruise_speed_mps,
             )
-
-            if not self.battery_manager.is_path_feasible(
-                state.remaining_energy_j,
-                estimated_path_energy_j,
-            ):
+            if not self.battery_manager.is_path_feasible(state.remaining_energy_j, estimated_path_energy_j):
                 state.is_mission_failed = True
                 state.failure_reason = "replanned path is not battery feasible"
                 break
 
-            # 2.4 沿路径飞行一个更新周期
             state = self._advance_along_path(
                 state=state,
                 path_xyz=planned_path,
                 delta_t_s=self.config.mission_update_interval_s,
+                time_history_s=time_history_s,
+                power_history_w=power_history_w,
+                risk_history=risk_history,
             )
-
             state.replans_count += 1
-
             if state.is_mission_failed:
                 break
 
+        return self._build_result(
+            state=state,
+            initial_no_wind_path=initial_no_wind_path,
+            initial_wind_path=initial_wind_path,
+            replanned_paths_xyz=replanned_paths_xyz,
+            time_history_s=time_history_s,
+            power_history_w=power_history_w,
+            risk_history=risk_history,
+        )
+
+    def _build_result(
+        self,
+        state: SimulationState,
+        initial_no_wind_path: Optional[List[Point3D]],
+        initial_wind_path: Optional[List[Point3D]],
+        replanned_paths_xyz: List[List[Point3D]],
+        time_history_s: List[float],
+        power_history_w: List[float],
+        risk_history: List[float],
+    ) -> MissionResult:
         return MissionResult(
             success=state.is_goal_reached and not state.is_mission_failed,
             final_state=state,
@@ -152,6 +167,9 @@ class MissionExecutor:
             total_mission_time_s=state.current_time_s,
             total_energy_used_j=state.total_energy_used_j,
             failure_reason=state.failure_reason,
+            time_history_s=time_history_s,
+            power_history_w=power_history_w,
+            risk_history=risk_history,
         )
 
     def _plan_once(
@@ -159,42 +177,22 @@ class MissionExecutor:
         start_xy: Tuple[float, float],
         goal_xy: Tuple[float, float],
         use_wind: bool,
-        start_time_s: float = 0.0,  # 🌟 修复点：这里给了默认值 0.0
+        start_time_s: float = 0.0,
     ) -> Optional[List[Point3D]]:
-        """
-        单次规划。通过临时切换 k_wind 控制是否启用风代价。
-        带有【自适应降级容错机制】
-        """
         original_k_wind = self.config.k_wind
         original_penalty = self.config.fatal_crash_penalty_j
-        
         self.config.k_wind = 1.0 if use_wind else 0.0
-        
+
         try:
-            # 🌟 修复点：明确把 start_time_s 传给 planner
             path = self.planner.search(start_xy, goal_xy, start_time_s=start_time_s)
-            
-            # 容错降级机制
             if path is None and use_wind:
-                print("\n⚠️ [系统告警] 绝对安全路径规划失败 (被禁飞区或极端气象阻塞)！")
-                print("🔄 [容错机制] 正在降低风险阈值，尝试执行高风险突防路线...")
-                
-                # 将坠机惩罚降低到原来的 1/3，让无人机变得“更勇敢”
+                print("\n[System Warning] Safe path not found. Retrying with softer risk penalty...")
                 self.config.fatal_crash_penalty_j = original_penalty * 0.33
-                
-                # 🌟 修复点：这里也要传 start_time_s
                 path = self.planner.search(start_xy, goal_xy, start_time_s=start_time_s)
-                
-                if path:
-                    print("✅ [容错成功] 已生成高风险备用航线！请密切关注飞行姿态。")
-                else:
-                    print("❌ [容错失败] 气象条件过于极端，强制禁飞。")
-                    
         finally:
-            # 无论成功失败，恢复原来的配置参数
             self.config.k_wind = original_k_wind
             self.config.fatal_crash_penalty_j = original_penalty
-            
+
         return path
 
     def _advance_along_path(
@@ -202,14 +200,10 @@ class MissionExecutor:
         state: SimulationState,
         path_xyz: List[Point3D],
         delta_t_s: float,
+        time_history_s: List[float],
+        power_history_w: List[float],
+        risk_history: List[float],
     ) -> SimulationState:
-        """
-        沿当前路径前进 delta_t_s 秒，更新：
-        - 当前位置
-        - 时间
-        - 剩余电量
-        - 已飞行轨迹
-        """
         remaining_distance_m = self.config.cruise_speed_mps * delta_t_s
         if remaining_distance_m <= 0:
             return state
@@ -218,99 +212,86 @@ class MissionExecutor:
         new_traveled_path = list(state.traveled_path_xyz)
         total_energy_used_j = state.total_energy_used_j
         remaining_energy_j = state.remaining_energy_j
-
-        # 将路径首点替换为当前状态，避免因重规划起点与当前点不完全重合带来跳变
+        current_time_s = state.current_time_s
         execution_path = [tuple(current_pos)] + list(path_xyz[1:])
 
         for i in range(len(execution_path) - 1):
             p0 = np.array(execution_path[i], dtype=float)
-            p1 = np.array(execution_path[i + 1], dtype=float)
-
-            seg_vec = p1 - p0
-            seg_len = np.linalg.norm(seg_vec)
+            p1_full = np.array(execution_path[i + 1], dtype=float)
+            seg_vec = p1_full - p0
+            seg_len = float(np.linalg.norm(seg_vec))
             if seg_len <= 1e-9:
                 continue
 
-            # 整段可飞完
             if remaining_distance_m >= seg_len:
-                midpoint = 0.5 * (p0 + p1)
-                wind_3d = self._sample_wind_3d(
-                    midpoint[0], midpoint[1], midpoint[2], state.current_time_s
-                )
-
-                seg_energy_j, seg_time_s, _ = self.physics.estimate_segment_energy(
-                    p0_xyz=p0,
-                    p1_xyz=p1,
-                    wind_velocity_xyz=wind_3d,
-                    cruise_speed_mps=self.config.cruise_speed_mps,
-                )
-
-                if not self.battery_manager.can_consume(remaining_energy_j, seg_energy_j):
-                    return SimulationState(
-                        current_time_s=state.current_time_s,
-                        position_xyz=tuple(current_pos),
-                        remaining_energy_j=remaining_energy_j,
-                        traveled_path_xyz=new_traveled_path,
-                        replans_count=state.replans_count,
-                        total_energy_used_j=total_energy_used_j,
-                        is_goal_reached=False,
-                        is_mission_failed=True,
-                        failure_reason="battery depleted during path execution",
-                    )
-
-                remaining_energy_j = self.battery_manager.consume_energy(
-                    remaining_energy_j, seg_energy_j
-                )
-                total_energy_used_j += seg_energy_j
-                state.current_time_s += seg_time_s
-
-                current_pos = p1
-                new_traveled_path.append(tuple(current_pos))
-                remaining_distance_m -= seg_len
-
+                p1 = p1_full
             else:
-                # 只能飞一部分
                 ratio = remaining_distance_m / seg_len
-                p_partial = p0 + ratio * seg_vec
+                p1 = p0 + ratio * seg_vec
 
-                midpoint = 0.5 * (p0 + p_partial)
-                wind_3d = self._sample_wind_3d(
-                    midpoint[0], midpoint[1], midpoint[2], state.current_time_s
+            midpoint = 0.5 * (p0 + p1)
+            wind_3d = self._sample_wind_3d(midpoint[0], midpoint[1], midpoint[2], current_time_s)
+            seg_energy_j, seg_time_s, seg_power_w = self.physics.estimate_segment_energy(
+                p0_xyz=p0,
+                p1_xyz=p1,
+                wind_velocity_xyz=wind_3d,
+                cruise_speed_mps=self.config.cruise_speed_mps,
+            )
+            next_time_s = current_time_s + seg_time_s
+            v_ground = max(np.linalg.norm(p1 - p0) / max(seg_time_s, 1e-6), 1.0)
+            p_crash, _ = self.estimator.get_risk(p1[0], p1[1], p1[2], v_ground, next_time_s)
+
+            time_history_s.append(next_time_s)
+            power_history_w.append(float(seg_power_w))
+            risk_history.append(float(p_crash))
+
+            if seg_power_w > self.config.max_power * self.config.rl_overload_power_ratio:
+                return SimulationState(
+                    current_time_s=current_time_s,
+                    position_xyz=tuple(current_pos),
+                    remaining_energy_j=remaining_energy_j,
+                    traveled_path_xyz=new_traveled_path,
+                    replans_count=state.replans_count,
+                    total_energy_used_j=total_energy_used_j,
+                    is_mission_failed=True,
+                    failure_reason="overload",
+                )
+            if p_crash > self.config.rl_terminate_risk_threshold:
+                return SimulationState(
+                    current_time_s=current_time_s,
+                    position_xyz=tuple(current_pos),
+                    remaining_energy_j=remaining_energy_j,
+                    traveled_path_xyz=new_traveled_path,
+                    replans_count=state.replans_count,
+                    total_energy_used_j=total_energy_used_j,
+                    is_mission_failed=True,
+                    failure_reason="storm_risk_too_high",
+                )
+            if not self.battery_manager.can_consume(remaining_energy_j, seg_energy_j):
+                return SimulationState(
+                    current_time_s=current_time_s,
+                    position_xyz=tuple(current_pos),
+                    remaining_energy_j=remaining_energy_j,
+                    traveled_path_xyz=new_traveled_path,
+                    replans_count=state.replans_count,
+                    total_energy_used_j=total_energy_used_j,
+                    is_mission_failed=True,
+                    failure_reason="battery_depleted",
                 )
 
-                seg_energy_j, seg_time_s, _ = self.physics.estimate_segment_energy(
-                    p0_xyz=p0,
-                    p1_xyz=p_partial,
-                    wind_velocity_xyz=wind_3d,
-                    cruise_speed_mps=self.config.cruise_speed_mps,
-                )
+            remaining_energy_j = self.battery_manager.consume_energy(remaining_energy_j, seg_energy_j)
+            total_energy_used_j += seg_energy_j
+            current_time_s = next_time_s
+            current_pos = p1
+            new_traveled_path.append(tuple(current_pos))
 
-                if not self.battery_manager.can_consume(remaining_energy_j, seg_energy_j):
-                    return SimulationState(
-                        current_time_s=state.current_time_s,
-                        position_xyz=tuple(current_pos),
-                        remaining_energy_j=remaining_energy_j,
-                        traveled_path_xyz=new_traveled_path,
-                        replans_count=state.replans_count,
-                        total_energy_used_j=total_energy_used_j,
-                        is_goal_reached=False,
-                        is_mission_failed=True,
-                        failure_reason="battery depleted during partial path execution",
-                    )
-
-                remaining_energy_j = self.battery_manager.consume_energy(
-                    remaining_energy_j, seg_energy_j
-                )
-                total_energy_used_j += seg_energy_j
-                state.current_time_s += seg_time_s
-
-                current_pos = p_partial
-                new_traveled_path.append(tuple(current_pos))
+            if remaining_distance_m < seg_len:
                 remaining_distance_m = 0.0
                 break
+            remaining_distance_m -= seg_len
 
         return SimulationState(
-            current_time_s=state.current_time_s,
+            current_time_s=current_time_s,
             position_xyz=tuple(current_pos),
             remaining_energy_j=remaining_energy_j,
             traveled_path_xyz=new_traveled_path,
@@ -326,11 +307,7 @@ class MissionExecutor:
         current_xyz: Point3D,
         goal_xy: Tuple[float, float],
     ) -> bool:
-        """
-        按配置检查是否到达终点。
-        """
         goal_z = self.estimator.get_altitude(goal_xy[0], goal_xy[1]) + self.config.takeoff_altitude_agl
-
         dx = current_xyz[0] - goal_xy[0]
         dy = current_xyz[1] - goal_xy[1]
         dz = current_xyz[2] - goal_z
@@ -338,14 +315,9 @@ class MissionExecutor:
         if self.config.goal_check_mode == "3d_distance":
             dist_3d = math.sqrt(dx * dx + dy * dy + dz * dz)
             return dist_3d <= self.config.goal_tolerance_3d_m
-
         if self.config.goal_check_mode == "xy_z_tolerance":
             dist_xy = math.hypot(dx, dy)
-            return (
-                dist_xy <= self.config.goal_tolerance_xy_m
-                and abs(dz) <= self.config.goal_tolerance_z_m
-            )
-
+            return dist_xy <= self.config.goal_tolerance_xy_m and abs(dz) <= self.config.goal_tolerance_z_m
         raise ValueError(f"Unknown goal check mode: {self.config.goal_check_mode}")
 
     def _sample_wind_3d(
@@ -355,9 +327,5 @@ class MissionExecutor:
         z: float,
         t_s: float,
     ) -> np.ndarray:
-        """
-        将 estimator 的二维风扩展成三维风向量 [wx, wy, wz]。
-        当前阶段 wz = 0。
-        """
         wind_2d = self.estimator.get_wind(x, y, z=z, t_s=t_s)
         return np.array([wind_2d[0], wind_2d[1], 0.0], dtype=float)

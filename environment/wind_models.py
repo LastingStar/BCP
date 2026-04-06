@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from configs.config import SimulationConfig
 from typing import List, Optional, Tuple
 
-
+# 🌟 这里是你刚才不小心删掉的基类！
 class BaseWindModel(ABC):
     """风场模型抽象基类"""
     @abstractmethod
@@ -25,50 +25,34 @@ class BaseWindModel(ABC):
     ) -> np.ndarray:
         pass
 
-
+# ==========================================
+# 无状态风暴模块 (全新修复版)
+# ==========================================
 @dataclass
-class StormCell:
-    """风暴单元（移动高风区）。"""
-    center_xy: np.ndarray  
+class StatelessStormCell:
+    """无状态风暴单元：位置仅由绝对时间 t_s 决定，解决时间穿梭探测导致的错位Bug"""
+    start_center_xy: np.ndarray  
     velocity_xy: np.ndarray  
     radius_m: float  
     strength_mps: float  
     birth_time_s: float  
-    lifetime_s: float  
-    last_t_s: float  
+    actual_lifetime_s: float  # 精确寿命（含飞出边界的时间）
 
-    def age(self, t_s: float) -> float:
-        return t_s - self.birth_time_s
+    def is_active(self, t_s: float) -> bool:
+        return self.birth_time_s <= t_s < (self.birth_time_s + self.actual_lifetime_s)
 
-    def is_alive(self, t_s: float, bounds: Tuple[float, float, float, float]) -> bool:
-        """🌟 死亡机制 1：寿命耗尽 或 移出地图边界则判定死亡"""
-        if self.age(t_s) >= self.lifetime_s:
-            return False
+    def center_at(self, t_s: float) -> np.ndarray:
+        age = t_s - self.birth_time_s
+        return self.start_center_xy + self.velocity_xy * age
+
+    def wind_at(self, x: float, y: float, t_s: float) -> np.ndarray:
+        if not self.is_active(t_s):
+            return np.array([0.0, 0.0], dtype=float)
             
-        min_x, max_x, min_y, max_y = bounds
-        cx, cy = self.center_xy
-        # 宽限一点：风暴中心超出地图边界一个半径的距离，才算彻底消散
-        if cx < min_x - self.radius_m or cx > max_x + self.radius_m or \
-           cy < min_y - self.radius_m or cy > max_y + self.radius_m:
-            return False
-            
-        return True
-
-    def update(self, t_s: float):
-        """🌟 去除反弹逻辑：风暴现在一往无前地移动，直到越界死亡"""
-        dt = t_s - self.last_t_s
-        if dt <= 0:
-            self.last_t_s = t_s
-            return
-        # 直线移动
-        self.center_xy = self.center_xy + self.velocity_xy * dt
-        self.last_t_s = t_s
-
-    def wind_at(self, x: float, y: float) -> np.ndarray:
-        """计算该点受该风暴影响的风速矢量"""
-        dist = np.linalg.norm(np.array([x, y]) - self.center_xy)
+        current_center = self.center_at(t_s)
+        dist = np.linalg.norm(np.array([x, y]) - current_center)
         
-        # 🌟 PPO 核心优化：使用高斯衰减 (Gaussian Decay)
+        # 高斯衰减
         sigma = self.radius_m / 2.5 
         weight = math.exp(-0.5 * (dist / sigma) ** 2)
         
@@ -87,69 +71,93 @@ class StormCell:
 
 
 class StormWindManager:
-    """管理一组移动风暴单元"""
+    """管理一组无状态风暴：在任务伊始预生成整场战役的风暴队列"""
     def __init__(self, config: SimulationConfig, bounds: Tuple[float, float, float, float]):
         self.config = config
         self.bounds = bounds
-        self.rng = np.random.default_rng(self.config.wind_seed)
-        self.storms: List[StormCell] = []
-        self._init_storms(0.0)
+        self.storm_slots = []
+        self._pregenerate_storms()
 
-    def _init_storms(self, t_s: float):
-        self.storms = [self._create_storm(t_s) for _ in range(self.config.storm_count)]
+    def _pregenerate_storms(self):
+        rng = np.random.default_rng(self.config.wind_seed)
+        self.storm_slots = []
+        
+        # 为每个名额 (storm_count) 预生成足以覆盖整个任务时长 (比如 7200 秒) 的接力风暴
+        for _ in range(self.config.storm_count):
+            slot_storms = []
+            current_t = 0.0
+            while current_t < 7200.0:  # 预生成 2 小时的风暴队列
+                storm = self._create_stateless_storm(rng, current_t)
+                slot_storms.append(storm)
+                current_t += storm.actual_lifetime_s
+            self.storm_slots.append(slot_storms)
 
-    def _create_storm(self, t_s: float) -> StormCell:
-        """🌟 出生机制 2：新风暴总是在地图边缘随机生成，并向内陆吹"""
+    def _create_stateless_storm(self, rng, birth_time_s: float) -> StatelessStormCell:
         min_x, max_x, min_y, max_y = self.bounds
         
-        edge = self.rng.integers(0, 4)
+        edge = rng.integers(0, 4)
         if edge == 0:
-            cx, cy = min_x, self.rng.uniform(min_y, max_y)
-            theta = self.rng.uniform(-math.pi/4, math.pi/4) 
+            cx, cy = min_x, rng.uniform(min_y, max_y)
+            theta = rng.uniform(-math.pi/4, math.pi/4) 
         elif edge == 1:
-            cx, cy = max_x, self.rng.uniform(min_y, max_y)
-            theta = self.rng.uniform(3*math.pi/4, 5*math.pi/4) 
+            cx, cy = max_x, rng.uniform(min_y, max_y)
+            theta = rng.uniform(3*math.pi/4, 5*math.pi/4) 
         elif edge == 2:
-            cx, cy = self.rng.uniform(min_x, max_x), min_y
-            theta = self.rng.uniform(math.pi/4, 3*math.pi/4) 
+            cx, cy = rng.uniform(min_x, max_x), min_y
+            theta = rng.uniform(math.pi/4, 3*math.pi/4) 
         else:
-            cx, cy = self.rng.uniform(min_x, max_x), max_y
-            theta = self.rng.uniform(5*math.pi/4, 7*math.pi/4) 
+            cx, cy = rng.uniform(min_x, max_x), max_y
+            theta = rng.uniform(5*math.pi/4, 7*math.pi/4) 
 
-        speed = self.rng.uniform(0.5 * self.config.storm_movement_speed_mps, self.config.storm_movement_speed_mps)
+        speed = rng.uniform(0.5 * self.config.storm_movement_speed_mps, self.config.storm_movement_speed_mps)
         velocity = np.array([math.cos(theta), math.sin(theta)]) * speed
+        radius = rng.uniform(self.config.storm_radius_range_m[0], self.config.storm_radius_range_m[1])
+        strength = rng.uniform(0.7, 1.2) * self.config.storm_strength_scale
+        nominal_lifetime = rng.uniform(0.8, 1.5) * self.config.storm_lifetime_s
 
-        radius = self.rng.uniform(self.config.storm_radius_range_m[0], self.config.storm_radius_range_m[1])
-        strength = self.rng.uniform(0.7, 1.2) * self.config.storm_strength_scale
-        lifetime = self.rng.uniform(0.8, 1.5) * self.config.storm_lifetime_s
+        actual_lifetime = 0.0
+        test_cx, test_cy = cx, cy
+        while actual_lifetime < nominal_lifetime:
+            if test_cx < min_x - radius or test_cx > max_x + radius or \
+               test_cy < min_y - radius or test_cy > max_y + radius:
+                break
+            test_cx += velocity[0]
+            test_cy += velocity[1]
+            actual_lifetime += 1.0
+            
+        if actual_lifetime < 1.0: actual_lifetime = 1.0
 
-        return StormCell(
-            center_xy=np.array([cx, cy], dtype=float),
+        return StatelessStormCell(
+            start_center_xy=np.array([cx, cy], dtype=float),
             velocity_xy=velocity,
             radius_m=radius,
             strength_mps=strength,
-            birth_time_s=t_s,
-            lifetime_s=lifetime,
-            last_t_s=t_s,
+            birth_time_s=birth_time_s,
+            actual_lifetime_s=actual_lifetime
         )
+
+    def get_active_storms(self, t_s: float) -> List[StatelessStormCell]:
+        """查询在绝对时间 t_s 存活的风暴"""
+        active = []
+        for slot in self.storm_slots:
+            for storm in slot:
+                if storm.is_active(t_s):
+                    active.append(storm)
+                    break 
+        return active
 
     def sample(self, x: float, y: float, t_s: float) -> np.ndarray:
         if not self.config.enable_storms:
             return np.array([0.0, 0.0], dtype=float)
 
-        # 🌟 核心轮回逻辑：检查死亡，触发新生
-        for i, storm in enumerate(self.storms):
-            if not storm.is_alive(t_s, self.bounds):
-                self.storms[i] = self._create_storm(t_s)
-            else:
-                storm.update(t_s)
-
         total = np.array([0.0, 0.0], dtype=float)
-        for storm in self.storms:
-            total += storm.wind_at(x, y)
+        for storm in self.get_active_storms(t_s):
+            total += storm.wind_at(x, y, t_s)
         return total
 
-
+# ==========================================
+# 基础坡度风模型
+# ==========================================
 class SlopeWindModel(BaseWindModel):
     """基于地形坡度的风场模型（包含时变背景风 + 昼夜坡度风 + 对数廓线 + 移动风暴）"""
     def __init__(self, config: SimulationConfig, bounds: Optional[Tuple[float, float, float, float]] = None):
@@ -228,10 +236,7 @@ class SlopeWindModel(BaseWindModel):
         return u_t, v_t
 
     def _log_profile_factor(self, z: float, z0: float) -> float:
-        """
-        计算对数风廓线修正系数。
-        🌟 引入严格的数值安全保护，防止 z <= z0 导致对数为负，或 z0=0 导致除零。
-        """
+        """计算对数风廓线修正系数。"""
         h_ref = 200.0  
         safe_z0 = max(z0, 0.001)  
         
@@ -254,7 +259,6 @@ class WindModelFactory:
         bounds: Optional[Tuple[float, float, float, float]] = None,
     ) -> BaseWindModel:
         if model_type == "slope" or model_type == "storm":
-            # 兼容 storm 和 slope 模式，统一交由 SlopeWindModel 处理
             if model_type == "storm":
                 config.enable_storms = True
             return SlopeWindModel(config, bounds)

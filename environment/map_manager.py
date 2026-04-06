@@ -109,46 +109,31 @@ class MapManager:
     def get_bounds(self) -> Tuple[float, float, float, float]:
         return self.x[0], self.x[-1], self.y[0], self.y[-1]
     
-    def is_collision(self, x: float, y: float, z: float) -> bool:
-        """
-        判断三维坐标 (x, y, z) 是否在地形内部
-        z: 绝对海拔高度
-        """
-        # 获取该处的地面海拔
-        ground_alt = self.get_altitude(x, y)
-        
-        # 安全高度余量 (比如 10米)
-        safety_margin = 10.0
-        
-        # 如果当前高度 < 地面高度 + 余量，那就是撞山了
-        if z < (ground_alt + safety_margin):
-            return True
-        return False
     
-    def is_in_nfz(self, x: float, y: float) -> bool:
-        """
-        判断坐标 (x, y) [单位:米] 是否在禁飞区内
-        """
+    # 替换 environment/map_manager.py 中的这两个函数
+    def is_in_nfz(self, x: float, y: float, nfz_list_km=None, inflation_m: float = 0.0) -> bool:
+        """判断坐标 (x, y) 是否在禁飞区内，支持安全半径膨胀"""
         if not self.config.enable_nfz:
             return False
-            
-        for (cx_km, cy_km, r_km) in self.config.nfz_list_km:
-            cx, cy, r = cx_km * 1000.0, cy_km * 1000.0, r_km * 1000.0
+
+        zones = self.config.nfz_list_km if nfz_list_km is None else nfz_list_km
+
+        for (cx_km, cy_km, r_km) in zones:
+            cx, cy = cx_km * 1000.0, cy_km * 1000.0
+            r = (r_km * 1000.0) + inflation_m  # 🌟 核心：膨胀禁飞区半径
             dist = math.hypot(x - cx, y - cy)
             if dist <= r:
                 return True
         return False
 
-    def is_collision(self, x: float, y: float, z: float) -> bool:
+    def is_collision(self, x: float, y: float, z: float, nfz_list_km=None, inflation_m: float = 0.0) -> bool:
         """判断是否撞山或进入禁飞区"""
-        # 1. 检查禁飞区
-        if self.is_in_nfz(x, y):
+        if self.is_in_nfz(x, y, nfz_list_km=nfz_list_km, inflation_m=inflation_m):
             return True
-            
-        # 2. 检查撞山
+
         ground_alt = self.get_altitude(x, y)
         safety_margin = 10.0
         if z < (ground_alt + safety_margin):
             return True
-            
+
         return False

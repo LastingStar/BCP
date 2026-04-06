@@ -1,123 +1,347 @@
-> 
->
-> ---
->
-> # 🚁 4D Spatio-Temporal Risk-Aware UAV Path Planning
-> **基于多源物理约束与微气象风险的无人机 4D 时空轨迹规划系统**
->
-> ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-> ![Python](https://img.shields.io/badge/python-3.8%2B-brightgreen)
-> ![Status](https://img.shields.io/badge/status-Stable%20Release-success)
-> ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
->
-> 本系统是一个深度耦合了**底层空气动力学、数字高程模型 (DEM)、大气边界层微气象学以及马尔可夫决策过程 (MDP)** 的工业级无人机仿真与导航框架。
->
-> 区别于传统的纯几何静态避障，本项目针对**极端恶劣天气（强风切变、移动雷暴）**与**复杂山地地形**，提出了创新的 **4D 时空预测规划算法 (4D Spatio-Temporal A*)**，赋予了无人机拟人化的风险博弈意识与绝境求生能力。
->
-> ---
->
-> ## ✨ 核心特性 (Key Features)
->
-> - 🏔️ **三维数字高程孪生 (3D Terrain Twin)**
->   - 导入真实地理 DEM 数据，精准感知地形梯度，智能区分“耗电爬升”与“省电平飞”。
-> - 🌪️ **TKE 极值概率风险映射 (Gust Exceedance Model)**
->   - 首创将**湍流动能 (TKE)**、风速切变与地表粗糙度，通过极值响应理论转化为**连续的坠机概率矩阵 ($P_{crash}$)**。
-> - ⏳ **4D 时空前瞻推演 (Spatio-Temporal Planning)**
->   - 突破静态算法“时间冻结”缺陷，在扩展搜索树时同步累加时间 $t$，精确预判并抢占移动雷暴阵列中的“时空安全窗口”。
-> - 🛡️ **自适应降级容错机制 (Adaptive Risk Fallback)**
->   - 在禁飞区与雷暴彻底封死去路的死锁绝境下，系统可主动降低安全阈值，生成“高风险突防备用航线”，确保任务底线。
-> - 🎬 **全景动态可视化与 Web UI (Interactive Dashboard)**
->   - 内置基于 Streamlit 的可视化看板，支持**一键渲染 4D 动态风暴躲避 GIF** 与 **真 3D 交互航迹图**。
->
-> ---
->
-> ## 🛠️ 系统架构 (Architecture)
->
-> ```text
-> 📦 drone-planning-sim
->  ┣ 📂 configs          # 全局配置中心 (物理参数/微气象参数/NFZ坐标)
->  ┣ 📂 core             # 算法核心引擎
->  │ ┣ 📜 planner.py     # 4D 极值风险感知 A* 规划器
->  │ ┣ 📜 physics.py     # 空气动力学能耗模型 (P = P_drag + P_climb)
->  │ ┣ 📜 estimator.py   # TKE 计算与极值概率风险映射
->  │ ┗ 📜 battery_manager.py
->  ┣ 📂 environment      # 环境建模
->  │ ┣ 📜 map_manager.py # DEM 高程解析与高斯梯度滤波
->  │ ┗ 📜 wind_models.py # 时变风场与 Gaussian Decay 移动风暴模型
->  ┣ 📂 simulation       # 动态闭环执行器
->  ┣ 📂 ui               # Streamlit 交互式前端看板
->  ┣ 📂 utils            # 工具链 (GIF 动画合成、B 样条平滑、绘图)
->  ┗ 📜 main.py          # 传统终端启动入口
-> ```
->
-> ---
->
-> ## 🚀 快速开始 (Quick Start)
->
-> ### 1. 环境依赖配置
-> 建议使用 Conda 创建纯净的虚拟环境：
-> ```bash
-> conda create -n uav_env python=3.9
-> conda activate uav_env
-> 
-> # 安装核心依赖
-> pip install numpy scipy matplotlib opencv-python plotly streamlit
-> ```
->
-> ### 2. 启动交互式 Web UI（强烈推荐）
-> 通过极其友好的 Web 界面，体验所见即所得的 4D 时空推演，调整抗扰系数，并实时渲染 3D 全景图与躲避风暴的 GIF 动画。
-> ```bash
-> streamlit run ui/drone_ui.py
-> ```
->
-> ### 3. 终端极速运行模式
-> 如果您仅需测试算法底层逻辑并输出静态数据图表，可直接运行主控程序：
-> ```bash
-> python main.py
-> ```
->
-> ---
->
-> ## 📊 核心算法逻辑：风险敏感型 MDP
->
-> 在代价函数的设计上，系统摒弃了单一的能量最优，转而采用**期望代价最小化 (Expected Cost Minimization)** 模型：
->
-> $$Cost_{expected} = Energy_{normal} + P_{crash} \times Penalty_{fatal}$$
->
-> - $Energy_{normal}$: 正常飞行状态下克服空气阻力与重力做功的能量积分。
-> - $P_{crash}$: 由 TKE 与无人机穿越该网格的**暴露时间**共同决定的姿态失稳坠机概率。
-> - $Penalty_{fatal}$: 灾难性事故的惩罚权重（可配置）。
->
-> 通过上述方程，系统在“正常耗电量”与“期望坠机损失”之间进行极其精准的数学权衡，使得无人机既不会盲目悲观（绕极大的远路），也不会盲目乐观（强穿高危风暴核心）。
->
-> ---
->
-> ## 💡 配置与调优 (Configuration)
->
-> 所有的物理引擎参数、气象极值参数以及演示设置，均集中在 `configs/config.py` 中。您可以自由调整以下关键参数以观察涌现出的智能行为：
->
-> | 参数名                    | 物理意义         | 调节效果                                        |
-> | :------------------------ | :--------------- | :---------------------------------------------- |
-> | `enable_storms`           | 是否开启移动雷暴 | 设为 `True` 即可开启 4D 时空躲避推演            |
-> | `max_ceiling`             | 最大绝对升限     | 调大允许无人机飞越喜马拉雅等极端高山            |
-> | `z_weight`                | 垂直爬升权重     | 调低鼓励无人机翻越山峰，调高迫使其在山谷中穿梭  |
-> | `drone_robustness_K`      | 飞行器抗扰鲁棒性 | 调低会让无人机对微小阵风极其敏感，频繁绕路      |
-> | `heuristic_safety_factor` | 加权 A* 贪婪因子 | 长距离航线建议设为 `3.5` 以上，极大加快求解速度 |
->
-> ---
->
-> ## 🤝 贡献与二次开发 (Contribution)
->
-> 本项目已实现标准化的 Gymnasium 环境封装接口思想。系统底层的 4D 物理仿真模块，未来可直接作为**多智能体强化学习（MARL）**与**具身智能无人机集群训练**的高保真数据生成基座（Data Generator）。
->
-> 欢迎提交 Pull Request (PR) 或 Issue 探讨以下拓展方向：
-> - [ ] 接入真实航空气象 NetCDF/GRIB 数据流
-> - [ ] 基于 PPO 算法的微观姿态抗扰控制器端到端训练
-> - [ ] 多无人机（Swarm）协作搜救与通信拓扑维持
->
-> ---
->
-> ## 📄 许可证 (License)
-> 本项目基于 **MIT License** 开源。在符合相关法律法规的前提下，允许自由用于学术研究、二次开发与商业用途。
->
-> *(注：README 中的演示图片及 GIF 请在本地运行程序生成后，上传至仓库的 `assets` 文件夹并替换对应链接。)*
+# 无人机路径规划仿真系统
+
+## 项目概述
+
+这是一个综合的无人机（UAV）路径规划仿真和强化学习训练系统，集成了传统规划算法（A*）和深度强化学习（PPO）方法。系统支持复杂环境建模、风场模拟、电池管理、任务执行和结果分析。
+
+## 核心功能
+
+### 1. 传统仿真模块
+- **路径规划**：基于A*算法的最优路径规划
+- **物理引擎**：无人机动力学模拟（加速度、速度、位置更新）
+- **电池管理**：电耗模型、电池管理策略
+- **状态估计**：位置、速度、电池状态等实时估计
+- **风场模型**：支持均匀风、时变风、空间变化风等多种风场模型
+- **地图管理**：障碍物检测、碰撞避免
+
+### 2. 强化学习模块
+- **RL环境**：基于OpenAI Gym框架的自定义无人机环境
+- **PPO训练**：使用Stable-Baselines3实现的PPO算法
+- **多阶段训练**：支持课程学习和渐进式难度提升
+- **模型管理**：检查点保存、最佳模型选择、评估
+
+### 3. 分析与可视化
+- **基准测试**：固定测试套件、长距离任务评估
+- **性能指标**：任务完成率、能耗效率、路径长度等
+- **动画渲染**：任务执行过程的可视化和动画生成
+- **结果分析**：CSV格式的测试结果导出和对比分析
+
+### 4. 用户界面
+- Web UI支持（通过 ui/drone_ui.py）
+- 实时参数配置
+- 结果可视化
+
+## 项目结构
+
+```
+project1/
+├── main.py                          # 传统仿真主程序
+├── launcher.py                      # 统一启动器
+├── check_coords.py                  # 坐标检查工具
+├── smoke_test.py                    # 快速测试脚本
+│
+├── configs/                         # 配置模块
+│   ├── config.py                   # 仿真参数配置
+│   └── eval_config.py              # 评估参数配置
+│
+├── core/                           # 核心算法模块
+│   ├── physics.py                  # 物理引擎
+│   ├── estimator.py                # 状态估计器
+│   ├── planner.py                  # A*路径规划器
+│   └── battery_manager.py          # 电池管理
+│
+├── environment/                    # 环境模块
+│   ├── map_manager.py             # 地图与障碍物管理
+│   └── wind_models.py             # 风场模型
+│
+├── simulation/                     # 仿真执行
+│   └── mission_executor.py        # 任务执行器
+│
+├── rl_env/                        # RL环境
+│   └── drone_env.py               # 自定义RL环境
+│
+├── rl_training/                   # 强化学习训练
+│   └── train_ppo.py               # PPO训练脚本
+│
+├── adapters/                      # 适配器
+│   └── rl_adapter.py             # RL与仿真的适配层
+│
+├── analysis/                      # 分析与基准测试
+│   ├── benchmark_fixed_suite.py   # 固定测试套件
+│   ├── benchmark_long_distance.py # 长距离基准测试
+│   ├── mission_metrics.py         # 性能指标计算
+│   └── render_case_studies.py     # 案例渲染
+│
+├── models/                        # 模型存储
+│   ├── mission_models.py          # 数据模型类
+│   ├── ppo_drone_stage1_obs31_run2_*  # 訓練的PPO模型
+│   └── ...
+│
+├── ui/                           # 用户界面
+│   └── drone_ui.py              # Web UI
+│
+├── utils/                        # 工具库
+│   ├── visualizer_core.py       # 可视化核心
+│   ├── visualizer.py            # 可视化工具
+│   └── animation_builder.py     # 动画生成
+│
+├── logs/                         # 训练日志
+│   ├── stage1_obs31_run2/
+│   ├── stage2_obs31_run2/
+│   └── stage3_obs31_run1/
+│
+├── results/                      # 测试结果
+│   ├── benchmark_stage1_model_on_stage1/
+│   ├── benchmark_stage2_model_on_stage2/
+│   └── ...
+│
+├── mission_outputs/              # 任务输出
+│
+├── tests/                        # 单元测试
+│   ├── test_physics.py
+│   ├── test_map_and_planner.py
+│   ├── test_mission_executor.py
+│   └── ...
+│
+└── requirements.txt              # 依赖包列表
+```
+
+## 安装指南
+
+### 前置要求
+- Python >= 3.8
+- 推荐使用 Conda 或 venv 创建虚拟环境
+
+### 安装步骤
+
+1. **克隆或下载项目**
+   ```bash
+   cd project1
+   ```
+
+2. **使用pip安装依赖**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **安装项目（可选）**
+   ```bash
+   pip install -e .
+   ```
+
+### 快速测试
+```bash
+python smoke_test.py  # 运行快速测试
+```
+
+## 使用指南
+
+### 1. 运行传统仿真
+```bash
+python main.py
+```
+- 执行单次任务仿真
+- 需要在 `configs/config.py` 中配置参数
+
+### 2. 强化学习训练
+```bash
+python launcher.py rl
+# 或直接运行
+python rl_training/train_ppo.py
+```
+- 启动PPO模型训练
+- 支持多阶段课程学习
+- 自动保存检查点和评估结果
+
+### 3. 基准测试
+```bash
+python analysis/benchmark_fixed_suite.py   # 固定测试套件
+python analysis/benchmark_long_distance.py # 长距离测试
+```
+- 测试多个模型或策略
+- 生成性能对比报告
+
+### 4. 启动UI
+```bash
+python launcher.py ui
+# 或直接运行
+python ui/drone_ui.py
+```
+
+### 5. 运行测试套件
+```bash
+python launcher.py test
+# 或使用 pytest
+pytest tests/
+```
+
+### 6. 使用启动器
+```bash
+python launcher.py --help
+
+使用示例：
+  python launcher.py sim          # 运行传统仿真
+  python launcher.py rl           # 训练RL模型
+  python launcher.py ui           # 启动Web界面
+  python launcher.py test         # 运行测试
+  python launcher.py install      # 安装依赖
+```
+
+## 主要模块说明
+
+### 配置系统 (`configs/`)
+- **SimulationConfig**: 仿真全局参数
+  - 环境参数：地图大小、障碍物设置
+  - 无人机参数：最大速度、加速度、质量
+  - 电池参数：容量、耗电率
+  - 规划参数：A*网格分辨率、安全距离
+
+### 核心算法 (`core/`)
+- **PhysicsEngine**: 运动学与动力学模型
+- **StateEstimator**: 实时状态估计（位置、速度等）
+- **AStarPlanner**: 基于栅格的A*最优路径规划
+- **BatteryManager**: 电池管理与能耗计算
+
+### 环境模型 (`environment/`)
+- **MapManager**: 栅格地图管理、碰撞检测
+- **WindModelFactory**: 多种风场模型
+  - UniformWind: 均匀风场
+  - TimeVaryingWind: 随时间变化的风
+  - SpatialWind: 空间变化的风
+
+### RL训练 (`rl_training/`)
+- **train_ppo.py**: PPO算法的完整训练流程
+  - 多环境并行（vectorized）
+  - 课程学习支持
+  - 定期评估和检查点保存
+  - 学习率调度
+
+### 分析与基准 (`analysis/`)
+- **BenchmarkFixedSuite**: 固定难度的测试套件
+- **BenchmarkLongDistance**: 超长距离任务评估
+- **MissionMetrics**: 计算性能指标
+  - 完成率、任务时间、能耗效率
+  - 路径长度、平均速度等
+
+## 关键配置参数
+
+在 `configs/config.py` 中修改：
+
+```python
+@dataclass
+class SimulationConfig:
+    # 环境
+    map_width: float = 1000           # 地图宽度
+    map_height: float = 1000          # 地图高度
+    obstacle_ratio: float = 0.2       # 障碍物占比
+    
+    # 无人机
+    max_velocity: float = 30          # 最大速度 (m/s)
+    max_accel: float = 2              # 最大加速度 (m/s²)
+    mass: float = 1.5                 # 质量 (kg)
+    
+    # 电池
+    battery_capacity: float = 100     # 电池容量 (Wh)
+    power_consumption_rate: float = 50  # 耗电率 (W)
+    
+    # 规划
+    grid_resolution: float = 10       # A*网格分辨率
+    safety_margin: float = 5          # 安全距离
+    
+    # 风场
+    wind_model_type: str = "uniform"  # 风场类型
+    wind_speed: float = 5             # 风速 (m/s)
+```
+
+## 模型和结果
+
+### 已训练的模型
+- `ppo_drone_stage1_obs31_run2_best`: 第一阶段最优模型
+- `ppo_drone_stage2_obs31_run2_best`: 第二阶段最优模型
+- `ppo_drone_stage3_obs31_run1_best`: 第三阶段最优模型
+
+### 测试结果
+- `results/benchmark_stage1_obs31/`: 第一阶段基准测试
+- `results/benchmark_stage2_obs31/`: 第二阶段基准测试
+- `results/benchmark_stage3_obs31/`: 第三阶段基准测试
+
+每个结果目录包含 `summary.csv`，包括：
+- 任务完成率
+- 平均任务时间
+- 平均能耗
+- 路径效率指标
+
+## 开发和测试
+
+### 运行单元测试
+```bash
+pytest tests/ -v
+```
+
+### 代码风格
+- 遵循 PEP 8 规范
+- 使用类型提示（Python 3.8+）
+
+### 添加新的风场模型
+参考 `environment/wind_models.py`，继承 `BaseWindModel` 类：
+
+```python
+class CustomWindModel(BaseWindModel):
+    def get_wind_at(self, x: float, y: float, t: float) -> Tuple[float, float]:
+        # 返回 (wind_x, wind_y)
+        pass
+```
+
+### 添加新的基准测试
+参考 `analysis/benchmark_fixed_suite.py` 的结构：
+
+```python
+def run_benchmark(config, num_episodes=10):
+    # 实现测试逻辑
+    results = []
+    for episode in range(num_episodes):
+        # ...
+    return results
+```
+
+## 系统要求
+
+- **CPU**: 多核处理器推荐（用于并行RL训练）
+- **内存**: 最少8GB，推荐16GB+
+- **GPU**: 可选，但训练速度会显著提升（推荐 NVIDIA CUDA）
+- **存储**: 预留5GB+用于模型和日志
+
+## 常见问题
+
+### Q: 如何训练自己的模型？
+A: 修改 `configs/config.py` 中的参数，然后运行：
+```bash
+python rl_training/train_ppo.py
+```
+
+### Q: 如何加载已有的模型进行评估？
+A: 查看 `analysis/benchmark_fixed_suite.py` 的 `load_model_for_benchmark()` 函数。
+
+### Q: 如何自定义任务场景？
+A: 在 `configs/config.py` 中修改地图参数、风场类型、起点和终点等。
+
+### Q: 程序崩溃了怎么办？
+A: 检查 `logs/` 目录中的错误日志，查看是否有内存不足或路径问题。
+
+## 贡献
+
+欢迎提交问题和改进建议。
+
+## 许可证
+
+项目许可信息（如有）
+
+## 联系方式
+
+如有问题或建议，请联系项目维护者。
+
+---
+
+**最后更新**: 2026-04-02
+
+**版本**: v1.0

@@ -1,357 +1,510 @@
-import sys, os
+# --- START OF FILE drone_ui.py ---
+
+import os
+import sys
+import time
+from pathlib import Path
+
+# 确保项目根目录在环境变量中
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import tempfile
-import time
+import streamlit as st
+import streamlit.components.v1 as components  # 🌟 新增：用于加载本地 3D HTML
 
 from configs.config import SimulationConfig
-from environment.map_manager import MapManager
-from environment.wind_models import WindModelFactory
+from core.battery_manager import BatteryManager
 from core.estimator import StateEstimator
 from core.physics import PhysicsEngine
-from core.battery_manager import BatteryManager
 from core.planner import AStarPlanner
+from environment.map_manager import MapManager
+from environment.wind_models import WindModelFactory
 from simulation.mission_executor import MissionExecutor
+from simulation.swarm_mission_executor import SwarmMissionExecutor
 from utils.animation_builder import MissionAnimator
-from analysis.mission_metrics import summarize_mission_result
+from utils.visualizer_core import Visualizer
 
-class DronePlanningUI:
-    def __init__(self):
-        # 初始化全局状态
-        if 'config' not in st.session_state:
-            st.session_state.config = SimulationConfig()
-        if 'map_manager' not in st.session_state:
-            st.session_state.map_manager = None
-        if 'map_loaded' not in st.session_state:
-            st.session_state.map_loaded = False
-            
-        self.config = st.session_state.config
-        
-        # 初始化起终点 session state
-        half_size_m = (self.config.map_size_km * 1000) / 2
-        if 'start_x' not in st.session_state: st.session_state.start_x = -half_size_m * 0.6
-        if 'start_y' not in st.session_state: st.session_state.start_y = -half_size_m * 0.6
-        if 'goal_x' not in st.session_state: st.session_state.goal_x = half_size_m * 0.6
-        if 'goal_y' not in st.session_state: st.session_state.goal_y = half_size_m * 0.6
+try:
+    from stable_baselines3 import PPO
+except ImportError:
+    PPO = None
 
-    def create_sidebar_config(self):
-        st.sidebar.title("⚙️ 系统配置中心")
+RESULTS_ROOT = Path(project_root) / "results"
+DEFAULT_MODEL_PATH = Path(project_root) / "models" / "ppo_drone_stage3_obs31_run1_best" / "best_model.zip"
 
-        # --- 1. 地图上传与初始化 ---
-        with st.sidebar.expander("🗺️ Step 1: 地形与环境构建", expanded=True):
-            uploaded_file = st.file_uploader("上传自定义地形 (灰度PNG/JPG)", type=['png', 'jpg', 'jpeg'])
-            if uploaded_file is not None:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    self.config.map_path = tmp_file.name
-            
-            self.config.map_size_km = st.slider("物理映射尺寸 (km)", 5.0, 50.0, self.config.map_size_km, 1.0)
-            self.config.min_alt = st.number_input("地形最低海拔 (m)", value=self.config.min_alt, step=10.0)
-            self.config.max_alt = st.number_input("地形最高海拔 (m)", value=self.config.max_alt, step=10.0)
-            
-            col_res1, col_res2 = st.columns(2)
-            with col_res1:
-                res_x = st.number_input("解析度 X", value=self.config.target_size[0], step=50)
-            with col_res2:
-                res_y = st.number_input("解析度 Y", value=self.config.target_size[1], step=50)
-            self.config.target_size = (int(res_x), int(res_y))
-            
-            self.config.time_of_day = st.selectbox("环境时间", ["Day", "Night", "Dusk", "Dawn"], 
-                                                   index=["Day", "Night", "Dusk", "Dawn"].index(self.config.time_of_day))
-            
-            if st.button("🌍 载入/刷新地形环境", type="primary", use_container_width=True):
-                with st.spinner("正在解析地形高程数据..."):
-                    st.session_state.map_manager = MapManager(self.config)
-                    st.session_state.map_loaded = True
-                st.success("地形解析完成！")
 
-        # --- 2. 微气象与极端风险 ---
-        with st.sidebar.expander("💨 Step 2: 气象与风险模型"):
-            self.config.enable_storms = st.checkbox("启用移动雷暴区 (Storms)", self.config.enable_storms)
-            self.config.env_wind_u = st.slider("基础东风 U (m/s)", -25.0, 25.0, self.config.env_wind_u, 1.0)
-            self.config.env_wind_v = st.slider("基础北风 V (m/s)", -25.0, 25.0, self.config.env_wind_v, 1.0)
-            st.markdown("<small>TKE 极值坠机概率映射参数</small>", unsafe_allow_html=True)
-            self.config.drone_robustness_K = st.slider("无人机抗扰鲁棒性 (K)", 10.0, 500.0, self.config.drone_robustness_K, 10.0)
-            self.config.fatal_crash_penalty_j = st.slider("坠机致命惩罚 (J)", 10000.0, 500000.0, self.config.fatal_crash_penalty_j, 10000.0)
+@st.cache_resource(show_spinner=False)
+def load_rl_model_cached(model_path: str):
+    if not PPO:
+        return None
+    model_file = Path(model_path)
+    if not model_file.exists():
+        return None
+    return PPO.load(str(model_file), device="cpu")
 
-        # --- 3. 🚁 无人机核心物理参数 ---
-        with st.sidebar.expander("🚁 Step 3: 无人机物理参数"):
-            self.config.drone_mass = st.number_input("无人机质量 (kg)", value=self.config.drone_mass, step=0.1)
-            self.config.drone_speed = st.slider("巡航速度 (m/s)", 5.0, 40.0, self.config.drone_speed, 1.0)
-            self.config.max_power = st.number_input("最大输出功率 (W)", value=self.config.max_power, step=100.0)
-            self.config.battery_capacity_j = st.number_input("电池总容量 (J)", value=self.config.battery_capacity_j, step=10000.0)
-            self.config.drag_coeff = st.number_input("风阻系数 (Cd)", value=self.config.drag_coeff, step=0.01)
-            # 🌟 新增：允许飞行的最高高度
-            self.config.max_ceiling = st.number_input("允许最高飞行海拔 (m)", value=self.config.max_ceiling, step=100.0)
 
-        # --- 4. 🚫 静态禁飞区动态设置 ---
-        with st.sidebar.expander("🚫 Step 4: 静态禁飞区 (NFZ)"):
-            self.config.enable_nfz = st.checkbox("启用静态禁飞区", self.config.enable_nfz)
-            if self.config.enable_nfz:
-                df_nfz = pd.DataFrame(self.config.nfz_list_km, columns=['中心 X', '中心 Y', '半径 R'])
-                edited_df = st.data_editor(df_nfz, num_rows="dynamic", use_container_width=True, hide_index=True)
-                self.config.nfz_list_km = [tuple(x) for x in edited_df.to_numpy()]
-
-        # --- 5. 🧠 A* 偏好控制 ---
-        with st.sidebar.expander("🧠 Step 5: A* 算法 AI 偏好"):
-            st.markdown("<small>决定无人机面对困难时的底层决策逻辑</small>", unsafe_allow_html=True)
-            # 将 heuristic_safety_factor 映射为直观的描述
-            self.config.heuristic_safety_factor = st.slider(
-                "行为倾向 (自保 vs 突防)", 
-                min_value=1.0, max_value=8.0, 
-                value=self.config.heuristic_safety_factor, step=0.5,
-                help="1.0 = 极度保守自保，绕远路保证绝对安全；数值越大 = 极度贪婪突防，像导弹一样不计代价直奔终点！"
-            )
-
-    def render_map_preview_and_selection(self):
-        """渲染 2D 交互地图预览"""
-        map_m = st.session_state.map_manager
-        step = max(1, map_m.size_x // 100)
-        x_mesh, y_mesh = np.meshgrid(map_m.x[::step], map_m.y[::step])
-        z_mesh = map_m.dem[::step, ::step]
-
-        fig = go.Figure(data=go.Contour(
-            z=z_mesh, x=map_m.x[::step], y=map_m.y[::step],
-            colorscale='Earth', contours=dict(showlabels=True, labelfont=dict(size=12, color='white'))
-        ))
-
-        if self.config.enable_nfz:
-            for cx_km, cy_km, r_km in self.config.nfz_list_km:
-                fig.add_shape(type="circle",
-                    x0=(cx_km-r_km)*1000, y0=(cy_km-r_km)*1000,
-                    x1=(cx_km+r_km)*1000, y1=(cy_km+r_km)*1000,
-                    fillcolor="red", opacity=0.3, line_color="red"
-                )
-
-        fig.add_trace(go.Scatter(
-            x=[st.session_state.start_x], y=[st.session_state.start_y], mode='markers+text', text=["起飞点"], textposition="top center",
-            marker=dict(size=18, color='yellow', symbol='star', line=dict(width=2, color='black'))
-        ))
-        fig.add_trace(go.Scatter(
-            x=[st.session_state.goal_x], y=[st.session_state.goal_y], mode='markers+text', text=["目标点"], textposition="top center",
-            marker=dict(size=18, color='red', symbol='x', line=dict(width=2, color='black'))
-        ))
-
-        fig.update_layout(
-            title="实时地形与任务布点图", xaxis_title="X 坐标 (米)", yaxis_title="Y 坐标 (米)",
-            yaxis=dict(scaleanchor="x", scaleratio=1), height=650, margin=dict(l=20, r=20, t=40, b=20), showlegend=False
+def create_map_preview(map_manager: MapManager, start_xy, goal_xy):
+    """创建 Plotly 交互式地图 2D 预览"""
+    step = max(1, map_manager.size_x // 100)
+    fig = go.Figure(
+        data=go.Contour(
+            z=map_manager.dem[::step, ::step],
+            x=map_manager.x[::step],
+            y=map_manager.y[::step],
+            colorscale="Earth",
+            contours_coloring="heatmap",
+            colorbar=dict(title="海拔 (m)")
         )
-        st.plotly_chart(fig, use_container_width=True)
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[start_xy[0]],
+            y=[start_xy[1]],
+            mode="markers+text",
+            text=["起点"],
+            textposition="top center",
+            marker=dict(size=16, color="yellow", symbol="star", line=dict(width=2, color="black")),
+            name="起点",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[goal_xy[0]],
+            y=[goal_xy[1]],
+            mode="markers+text",
+            text=["终点"],
+            textposition="top center",
+            marker=dict(size=16, color="red", symbol="x", line=dict(width=2, color="black")),
+            name="终点",
+        )
+    )
+    fig.update_layout(
+        height=500, 
+        margin=dict(l=20, r=20, t=40, b=20), 
+        title="当前配置任务地图预览",
+        yaxis=dict(scaleanchor="x", scaleratio=1) # 强制正方形比例
+    )
+    return fig
 
-    def create_main_interface(self):
-        st.title("🚁 基于 TKE 极值风险的 4D 轨迹规划系统")
-        st.markdown("---")
 
-        if not st.session_state.map_loaded:
-            st.info("👈 请先在左侧边栏点击 **[载入/刷新地形环境]** 按钮初始化地图。")
-            return
+def save_3d_interactive_html(map_manager: MapManager, mission_result, save_path: Path):
+    """🌟 核心新增：生成并在本地保存真 3D 可交互地形与航迹图 (HTML格式)"""
+    path_xyz = np.array(mission_result.actual_flown_path_xyz)
+    if len(path_xyz) < 2:
+        return
 
-        st.subheader("📍 任务航点设置 (拖动滑块即可在下方地图预览位置)")
-        half_size = float((self.config.map_size_km * 1000) / 2)
+    # 降采样地形以保证浏览器流畅度 (网格控制在 60x60 左右)
+    step = max(1, map_manager.size_x // 60)
+    X, Y = np.meshgrid(map_manager.x[::step], map_manager.y[::step])
+    Z = map_manager.dem[::step, ::step]
+
+    fig = go.Figure()
+
+    # 1. 绘制 3D 地形曲面
+    fig.add_trace(go.Surface(
+        x=X, y=Y, z=Z,
+        colorscale='Earth', opacity=0.85, showscale=False, name='地形'
+    ))
+
+    # 2. 绘制 3D 飞行轨迹
+    fig.add_trace(go.Scatter3d(
+        x=path_xyz[:, 0], y=path_xyz[:, 1], z=path_xyz[:, 2],
+        mode='lines', line=dict(color='#00FF00', width=6), name='实际飞行 3D 航迹'
+    ))
+
+    # 3. 绘制起终点
+    fig.add_trace(go.Scatter3d(
+        x=[path_xyz[0, 0]], y=[path_xyz[0, 1]], z=[path_xyz[0, 2]],
+        mode='markers', marker=dict(size=8, color='yellow', line=dict(width=2, color='black')), name='起点'
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=[path_xyz[-1, 0]], y=[path_xyz[-1, 1]], z=[path_xyz[-1, 2]],
+        mode='markers', marker=dict(size=8, color='red', line=dict(width=2, color='black')), name='终点/坠机点'
+    ))
+
+    # 4. 配置场景比例
+    fig.update_layout(
+        title="真 3D 航迹数字孪生 (鼠标左键拖拽旋转、滚轮缩放)",
+        scene=dict(
+            xaxis_title='X 坐标 (m)',
+            yaxis_title='Y 坐标 (m)',
+            zaxis_title='海拔高度 (m)',
+            aspectmode='data'  # 强制 3D 比例对应真实物理尺寸
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+    )
+
+    # 写入到 HTML 文件
+    fig.write_html(str(save_path), include_plotlyjs="cdn")
+
+
+def apply_ui_config(ui_state: dict, disturbance_enabled: bool = False) -> SimulationConfig:
+    """将 UI 的状态全面注入到底层 config 中"""
+    config = SimulationConfig()
+    config.curriculum_stage = 3
+    config.enable_storms = True
+
+    # 1. 地图与环境
+    config.map_path = ui_state["map_path"]
+    config.map_size_km = ui_state["map_size_km"]
+    config.min_alt = ui_state["min_alt"]
+    config.max_alt = ui_state["max_alt"]
+    config.target_size = (ui_state["map_resolution"], ui_state["map_resolution"])
+    config.time_of_day = ui_state["time_of_day"]
+    config.env_wind_u = ui_state["env_wind_u"]
+    config.env_wind_v = ui_state["env_wind_v"]
+    config.enable_nfz = ui_state["enable_nfz"]
+
+    # 2. 风暴与阵风
+    config.wind_seed = ui_state["wind_seed"]
+    config.storm_count = ui_state["storm_count"]
+    config.enable_random_gusts = disturbance_enabled
+    config.gust_trigger_prob = ui_state["gust_trigger_prob"]
+    config.gust_duration_s = ui_state["gust_duration_s"]
+    config.gust_min_speed_mps = ui_state["gust_min_speed_mps"]
+    config.gust_max_speed_mps = ui_state["gust_max_speed_mps"]
+
+    # 3. 物理与 A*
+    config.cruise_speed_mps = ui_state["cruise_speed_mps"]
+    config.drone_speed = ui_state["cruise_speed_mps"]
+    config.max_power = ui_state["max_power"]
+    config.heuristic_safety_factor = ui_state["heuristic_safety_factor"]
+    config.max_replans = ui_state["max_replans"]
+
+    # 4. 集群与护盾
+    config.enable_support_shield_mode = ui_state["enable_support_shield_mode"]
+    config.support_shield_master_radius_m = ui_state["support_shield_master_radius_m"]
+    config.support_shield_offset_m = ui_state["support_shield_offset_m"]
+
+    # 5. RL 参数
+    config.gust_obs_noise_std = ui_state["gust_obs_noise_std"]
+
+    return config
+
+
+def run_mission_case(case_name: str, mode_name: str, disturbance_enabled: bool, ui_state: dict, rl_model, output_dir: Path):
+    """运行测评单个案例（支持单机与编队）"""
+    config = apply_ui_config(ui_state, disturbance_enabled)
+    if mode_name != "rl":
+        config.gust_obs_noise_std = 0.0
+
+    start_xy = ui_state["matrix_start"]
+    goal_xy = ui_state["matrix_goal"]
+    is_swarm = ui_state["fleet_mode"] == "Swarm"
+
+    map_manager = MapManager(config)
+    wind_model = WindModelFactory.create(config.wind_model_type, config, bounds=map_manager.get_bounds())
+    estimator = StateEstimator(map_manager, wind_model, config)
+    physics = PhysicsEngine(config)
+    battery = BatteryManager(config)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vis = Visualizer(config, estimator)
+    animator = MissionAnimator(config, estimator)
+
+    start_t = time.time()
+
+    if is_swarm:
+        # 四机编队模式
+        executor = SwarmMissionExecutor(config, estimator, physics, battery, master_mode=mode_name, rl_model=rl_model)
+        mission_result = executor.execute_mission(start_xy, goal_xy)
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### ⭐ 【起飞点】")
-            st.session_state.start_x = st.slider("起点 X", min_value=-half_size, max_value=half_size, value=float(st.session_state.start_x), step=10.0)
-            st.session_state.start_y = st.slider("起点 Y", min_value=-half_size, max_value=half_size, value=float(st.session_state.start_y), step=10.0)
-
-        with col2:
-            st.markdown("#### ❌ 【降落点】")
-            st.session_state.goal_x = st.slider("终点 X", min_value=-half_size, max_value=half_size, value=float(st.session_state.goal_x), step=10.0)
-            st.session_state.goal_y = st.slider("终点 Y", min_value=-half_size, max_value=half_size, value=float(st.session_state.goal_y), step=10.0)
-
-        self.render_map_preview_and_selection()
-        st.markdown("---")
+        vis.plot_swarm_execution(mission_result, start_xy, goal_xy, save_dir=str(output_dir))
+        vis.plot_swarm_elevation_profile(mission_result, save_dir=str(output_dir))
+        animator.generate_swarm_gif(mission_result, start_xy, goal_xy, filename=str(output_dir / f"{case_name}.gif"))
+    else:
+        # 单机模式
+        planner = AStarPlanner(config, estimator, physics)
+        executor = MissionExecutor(config, estimator, physics, battery, planner)
+        mission_result = executor.execute_mission(start_xy, goal_xy)
         
-        if st.button("🚀 开始 4D 时空推演与避障规划", type="primary", use_container_width=True):
-            start_xy = (st.session_state.start_x, st.session_state.start_y)
-            goal_xy = (st.session_state.goal_x, st.session_state.goal_y)
-            self.run_simulation(start_xy, goal_xy)
+        vis.plot_single_mission_execution(mission_result, start_xy, goal_xy, method_name=mode_name.upper(), save_dir=str(output_dir))
+        vis.plot_elevation_profile(mission_result, save_dir=str(output_dir), method_name=mode_name.upper())
+        animator.generate_gif(mission_result, start_xy, goal_xy, filename=str(output_dir / f"{case_name}.gif"), physics_engine=physics)
 
-    def run_simulation(self, start_xy, goal_xy):
-        map_manager = st.session_state.map_manager
-        wind_model = WindModelFactory.create(self.config.wind_model_type, self.config, bounds=map_manager.get_bounds())
-        estimator = StateEstimator(map_manager, wind_model, self.config)
-        physics = PhysicsEngine(self.config)
-        battery_manager = BatteryManager(self.config)
-        planner = AStarPlanner(self.config, estimator, physics)
-        executor = MissionExecutor(self.config, estimator, physics, battery_manager, planner)
+    elapsed = time.time() - start_t
 
-        with st.spinner("🤖 正在构建 TKE 微气象场与 4D 空间搜索树... (预计10-40秒)"):
-            start_time = time.time()
-            mission_result = executor.execute_mission(start_xy, goal_xy)
-            calc_time = time.time() - start_time
+    # 🌟 无论单机还是多机，都生成一份真 3D 的 HTML 文件保存下来
+    save_3d_interactive_html(map_manager, mission_result, output_dir / "3d_trajectory.html")
 
-        st.subheader("📊 航路综合评估报告")
-        summary = summarize_mission_result(mission_result)
+    return {
+        "场景": case_name,
+        "控制算法": mode_name.upper(),
+        "微观扰动": "开启 (GUST)" if disturbance_enabled else "无 (CLEAN)",
+        "任务成功": "✅" if mission_result.success else "❌",
+        "终止原因": mission_result.failure_reason or "安全抵达",
+        "飞行耗时(s)": round(mission_result.total_mission_time_s, 1),
+        "消耗能量(kJ)": round(mission_result.total_energy_used_j / 1000.0, 1),
+        "重规划次数": mission_result.total_replans,
+        "计算耗时(s)": round(elapsed, 2),
+        "output_dir": str(output_dir),
+    }
+
+
+def display_artifacts(output_dir: Path, gif_name: str | None = None):
+    """端正美观地渲染生成的文件 (加入 3D 视图内嵌)"""
+    # 查找静态图纸
+    swarm_static = output_dir / "swarm_static_trajectories.png"
+    single_static = output_dir / "analysis_01_terrain_and_paths.png"
+    static_png = swarm_static if swarm_static.exists() else single_static
+
+    swarm_prof = output_dir / "swarm_elevation_profile.png"
+    single_prof = output_dir / "analysis_03_elevation_profile.png"
+    profile_png = swarm_prof if swarm_prof.exists() else single_prof
+
+    gif_path = output_dir / gif_name if gif_name else None
+    if gif_path is None:
+        gifs = list(output_dir.glob("*.gif"))
+        gif_path = gifs[0] if gifs else None
+
+    html_3d_path = output_dir / "3d_trajectory.html"
+
+    # 第一排：居中显示大尺寸 4D 动图
+    if gif_path and gif_path.exists():
+        col_g1, col_g2, col_g3 = st.columns([1, 4, 1]) # 中间占比大，实现居中
+        with col_g2:
+            st.image(str(gif_path), caption=f"4D 时空动态飞行追踪 ({gif_path.name})", use_container_width=True)
+            
+    st.divider()
+
+    # 第二排：左右对齐显示 2D 静态结果
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if static_png.exists():
+            st.image(str(static_png), caption="最终静态拓扑/平面轨迹图", use_container_width=True)
+    with col_s2:
+        if profile_png.exists():
+            st.image(str(profile_png), caption="飞行高度与地形时间剖面图", use_container_width=True)
+
+    # 🌟 第三排：满宽展示可交互 3D 渲染图
+    if html_3d_path.exists():
+        st.divider()
+        st.markdown("#### 🌍 真 3D 航迹数字孪生 (Interactive 3D View)")
+        st.caption("提示：你可以使用鼠标左键旋转视角，滚轮放大缩小，悬停查看具体的空间坐标与海拔。")
+        # 读取本地 HTML 并通过 iframe 嵌入 Streamlit
+        with open(html_3d_path, 'r', encoding='utf-8') as f:
+            html_data = f.read()
+        components.html(html_data, height=600)
+            
+    st.caption(f"📂 成果文件保存路径: {output_dir}")
+
+
+def list_result_dirs():
+    """获取之前所有的结果文件夹"""
+    if not RESULTS_ROOT.exists():
+        return []
+    return sorted([path for path in RESULTS_ROOT.iterdir() if path.is_dir()], key=lambda p: p.name)
+
+
+def main():
+    st.set_page_config(page_title="无人机风暴环境突防测控中心", page_icon="🛰️", layout="wide")
+    st.title("🛰️ 4D 时空极值风险规避与协同控制中心")
+    st.caption("支持自定义高程地图导入、单/多机编队切换，以及不同算法抗环境扰动的矩阵测评与 3D 可视化。")
+
+    # ==========================
+    # 侧边栏：多维度配置区
+    # ==========================
+    st.sidebar.header("🗺️ 地形与地图参数设定")
+    
+    # 1. 自定义地图上传
+    uploaded_map = st.sidebar.file_uploader("1. 上传自定义高程图 (PNG/JPG)", type=["png", "jpg", "jpeg"], help="不上传则使用默认的瑞士雪山地图。建议上传正方形图片。")
+    default_config = SimulationConfig()
+    
+    if uploaded_map is not None:
+        temp_map_path = os.path.join(project_root, "temp_uploaded_map.png")
+        with open(temp_map_path, "wb") as f:
+            f.write(uploaded_map.getbuffer())
+        map_path = temp_map_path
+    else:
+        map_path = default_config.map_path
+
+    # 地图物理属性 (开放设置)
+    map_size_km = st.sidebar.number_input("2. 地图物理边长 (km)", value=17.28, step=1.0, help="定义这张图片在真实世界里代表多宽。")
+    col_alt1, col_alt2 = st.sidebar.columns(2)
+    min_alt = col_alt1.number_input("最低海拔(m)", value=563.0, step=50.0)
+    max_alt = col_alt2.number_input("最高海拔(m)", value=3985.4, step=50.0)
+    map_res = st.sidebar.slider("3. 内部解析分辨率 (像素)", 100, 600, 300, 50, help="值越大网格越精细，但 A* 寻路会变慢。")
+    
+    st.sidebar.header("🌤️ 气象与环境")
+    time_of_day = st.sidebar.selectbox("昼夜模式 (影响地形风向)", ["Day (白昼)", "Night (夜晚)"], index=1)
+    time_val = "Day" if "Day" in time_of_day else "Night"
+    
+    col_wind1, col_wind2 = st.sidebar.columns(2)
+    env_wind_u = col_wind1.number_input("恒定背景风向 X (m/s)", value=-3.0, step=1.0)
+    env_wind_v = col_wind2.number_input("恒定背景风向 Y (m/s)", value=5.0, step=1.0)
+    enable_nfz = st.sidebar.checkbox("启用静态禁飞区 (NFZ)", value=True)
+
+    with st.sidebar.expander("🌪️ 动态风暴与微观阵风设定", expanded=False):
+        wind_seed = st.number_input("随机风暴生成种子", min_value=0, value=37, step=1)
+        storm_count = st.slider("动态风暴数量", 1, 8, 3)
+        gust_trigger_prob = st.slider("随机阵风触发概率", 0.0, 0.1, 0.02, 0.01)
+        gust_duration_s = st.slider("单次阵风持续时间 (s)", 2.0, 30.0, 8.0, 2.0)
+        gust_min_speed_mps = st.number_input("阵风最低风速 (m/s)", value=4.0)
+        gust_max_speed_mps = st.number_input("阵风最高风速 (m/s)", value=10.0)
+
+    with st.sidebar.expander("🚁 无人机物理与 A* 参数", expanded=False):
+        cruise_speed_mps = st.slider("无人机巡航速度 (m/s)", 5.0, 30.0, 15.0, 1.0)
+        max_power = st.number_input("电机最大抗风功率限制 (W)", value=4000.0, step=100.0)
+        heuristic_safety_factor = st.slider("A* 启发式贪婪加速因子", 1.0, 5.0, 2.0, 0.5)
+        max_replans = st.number_input("遇到死胡同时全局最大重规划次数", value=100, step=10)
+
+    with st.sidebar.expander("🛡️ 异构集群护盾设定", expanded=False):
+        enable_support_shield_mode = st.checkbox("启用 Support (支援蜂) 物理抗风护盾", value=True)
+        support_shield_master_radius_m = st.slider("威胁风暴进入多少米触发护盾", 800, 2500, 1400, 100)
+        support_shield_offset_m = st.slider("支援蜂超前掩护距离 (m)", 200, 1000, 450, 50)
+
+    with st.sidebar.expander("🧠 强化学习 (RL) 模型与传感器", expanded=False):
+        model_path = st.text_input("PPO 神经网络权重路径", value=str(DEFAULT_MODEL_PATH))
+        gust_obs_noise_std = st.slider("RL 雷达传感器环境噪声标准差", 0.0, 0.1, 0.01, 0.01)
+        rl_model = load_rl_model_cached(model_path)
+        if rl_model is None:
+            st.error("❌ RL 模型未加载或不存在。")
+        else:
+            st.success("✅ PPO RL 模型已就绪！")
+
+    # ==========================
+    # 顶部控制：模式与起终点
+    # ==========================
+    st.subheader("🛠️ 任务编队与坐标设定")
+    
+    col_top1, col_top2 = st.columns([1, 2])
+    with col_top1:
+        fleet_mode_str = st.radio("选择出击机群规模：", ["四机编队 (FANET Swarm)", "单机模式 (Single Drone)"])
+        fleet_mode = "Swarm" if "四机" in fleet_mode_str else "Single"
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("执行状态", "✅ 突防成功" if summary['success'] else "❌ 强制禁飞")
-        c2.metric("算法耗时", f"{calc_time:.2f} s")
-        c3.metric("预估电耗", f"{summary['total_energy_used_j']/1000:.1f} kJ")
-        c4.metric("航迹总长", f"{summary['executed_path_length_m']:.1f} m")
-
-        if not mission_result.success:
-            st.error(f"🛑 任务终止: {summary['failure_reason']}")
-            return
-
-        # ==========================================
-        # 🌟 第一排：4D动画 与 3D轨迹
-        # ==========================================
-        col_left, col_right = st.columns([1.2, 1])
-        with col_left:
-            st.subheader("🎬 4D 气象风暴规避推演")
-            with st.spinner("正在合成动图..."):
-                gif_path = "web_dynamic_mission.gif"
-                animator = MissionAnimator(self.config, estimator)
-                animator.generate_gif(mission_result, start_xy, goal_xy, filename=gif_path)
-                st.image(gif_path, use_container_width=True)
-
-        with col_right:
-            st.subheader("🌍 真 3D 航迹数字孪生")
-            with st.spinner("渲染 3D 地形..."):
-                fig_3d = self.create_3d_visualization(map_manager, mission_result)
-                st.plotly_chart(fig_3d, use_container_width=True)
-
-        st.markdown("---")
-
-        # ==========================================
-        # 🌟 第二排：风场RGB 与 高度剖面图
-        # ==========================================
-        col_plot1, col_plot2 = st.columns(2)
+        if fleet_mode == "Single":
+            st.warning("⚠️ 警告：单机模式视野严重受限！失去预警与护盾掩护后，迎面撞上风暴大概率坠机！此外，本系统单机回退使用传统 A* 算法。")
+            
+    with col_top2:
+        # 🌟 根据用户设定的地图物理尺寸自动限制滑块的范围，防止越界
+        half_m = float((map_size_km * 1000) / 2)
+        def clamp(v): return max(-half_m, min(v, half_m))
         
-        with col_plot1:
-            st.subheader("🌪️ 风场流线与风险区映射 (t=0)")
-            with st.spinner("计算风场流线数据..."):
-                fig_wind = self.create_matplotlib_wind_plot(map_manager, estimator, start_xy, goal_xy)
-                st.pyplot(fig_wind)
+        st.write("请在滑块上拖动或直接点击数字修改（单位：米）：")
+        col_coord1, col_coord2 = st.columns(2)
+        # 默认值优先取限制后的合理值
+        start_x = col_coord1.slider("起点 X (m)", -half_m, half_m, clamp(-8000.0), 100.0)
+        start_y = col_coord2.slider("起点 Y (m)", -half_m, half_m, clamp(-8000.0), 100.0)
+        goal_x = col_coord1.slider("终点 X (m)", -half_m, half_m, clamp(6000.0), 100.0)
+        goal_y = col_coord2.slider("终点 Y (m)", -half_m, half_m, clamp(7500.0), 100.0)
 
-        with col_plot2:
-            st.subheader("📈 飞行高度智能剖面图")
-            with st.spinner("绘制高度曲线..."):
-                fig_profile = self.create_elevation_profile(map_manager, mission_result)
-                st.plotly_chart(fig_profile, use_container_width=True)
+    # 汇总 UI 状态
+    ui_state = {
+        "map_path": map_path,
+        "map_size_km": map_size_km,
+        "min_alt": min_alt,
+        "max_alt": max_alt,
+        "map_resolution": map_res,
+        "time_of_day": time_val,
+        "env_wind_u": env_wind_u,
+        "env_wind_v": env_wind_v,
+        "enable_nfz": enable_nfz,
+        "wind_seed": wind_seed,
+        "storm_count": storm_count,
+        "gust_trigger_prob": gust_trigger_prob,
+        "gust_duration_s": gust_duration_s,
+        "gust_min_speed_mps": gust_min_speed_mps,
+        "gust_max_speed_mps": gust_max_speed_mps,
+        "cruise_speed_mps": cruise_speed_mps,
+        "max_power": max_power,
+        "heuristic_safety_factor": heuristic_safety_factor,
+        "max_replans": max_replans,
+        "enable_support_shield_mode": locals().get("enable_support_shield_mode", False),
+        "support_shield_master_radius_m": locals().get("support_shield_master_radius_m", 1400.0),
+        "support_shield_offset_m": locals().get("support_shield_offset_m", 450.0),
+        "gust_obs_noise_std": gust_obs_noise_std,
+        "fleet_mode": fleet_mode,
+        "matrix_start": (start_x, start_y),
+        "matrix_goal": (goal_x, goal_y),
+    }
 
-    def create_3d_visualization(self, map_manager, mission_result):
-        path = np.array(mission_result.actual_flown_path_xyz)
-        step = max(1, map_manager.size_x // 60)
-        X, Y = np.meshgrid(map_manager.x[::step], map_manager.y[::step])
-        Z = map_manager.dem[::step, ::step]
+    # ==========================
+    # 主体界面 Tabs
+    # ==========================
+    preview_config = apply_ui_config(ui_state, disturbance_enabled=False)
+    preview_map = MapManager(preview_config)
 
-        fig = go.Figure()
-        fig.add_trace(go.Surface(x=X, y=Y, z=Z, colorscale='Earth', opacity=0.8, showscale=False))
-        fig.add_trace(go.Scatter3d(x=path[:, 0], y=path[:, 1], z=path[:, 2], mode='lines', line=dict(color='#00FF00', width=6), name='航迹'))
-        fig.add_trace(go.Scatter3d(x=[path[0, 0]], y=[path[0, 1]], z=[path[0, 2]], mode='markers', marker=dict(size=8, color='yellow'), name='起点'))
-        fig.add_trace(go.Scatter3d(x=[path[-1, 0]], y=[path[-1, 1]], z=[path[-1, 2]], mode='markers', marker=dict(size=8, color='red'), name='终点'))
-        fig.update_layout(scene=dict(xaxis_title='X (m)', yaxis_title='Y (m)', zaxis_title='Alt (m)', aspectmode='data'), margin=dict(l=0, r=0, b=0, t=0))
-        return fig
+    tab_matrix, tab_artifacts = st.tabs(["🚀 任务推演大厅", "📂 历史成果画廊"])
 
-    def create_matplotlib_wind_plot(self, map_manager, estimator, start_xy, goal_xy):
-        """🌟 核心图表集成：纯 Python/Matplotlib 绘制风场 RGB 与 流线"""
-        step = max(1, map_manager.size_x // 60)
-        X_sub = map_manager.X[::step, ::step]
-        Y_sub = map_manager.Y[::step, ::step]
-        rows, cols = X_sub.shape
-        
-        speed_grid = np.zeros((rows, cols))
-        u_grid = np.zeros((rows, cols))
-        v_grid = np.zeros((rows, cols))
-        
-        # 获取环境风
-        for i in range(rows):
-            for j in range(cols):
-                w = estimator.get_wind(map_manager.x[j*step], map_manager.y[i*step], z=-1.0, t_s=0.0)
-                speed_grid[i, j] = np.linalg.norm(w)
-                u_grid[i, j] = w[0]
-                v_grid[i, j] = w[1]
-
-        fig, ax = plt.subplots(figsize=(8, 6))
-        
-        # 1. 风场底图 (Turbo色带)
-        contour = ax.contourf(X_sub / 1000.0, Y_sub / 1000.0, speed_grid, 50, cmap='turbo')
-        cbar = plt.colorbar(contour, ax=ax, pad=0.02)
-        cbar.set_label("Wind Speed (m/s)")
-        
-        # 2. 气流流线
-        ax.streamplot(X_sub / 1000.0, Y_sub / 1000.0, u_grid, v_grid, density=1.0, color='white', linewidth=0.8, arrowsize=1.2)
-        
-        # 3. 绘制静态禁飞区
-        if self.config.enable_nfz:
-            for cx_km, cy_km, r_km in self.config.nfz_list_km:
-                circle = patches.Circle((cx_km, cy_km), r_km, linewidth=2, edgecolor='red', facecolor='red', alpha=0.3, hatch='//')
-                ax.add_patch(circle)
-                ax.text(cx_km, cy_km, 'NFZ', color='darkred', fontsize=12, fontweight='bold', ha='center', va='center')
-
-        # 4. 绘制移动雷暴
-        if self.config.enable_storms and hasattr(estimator.wind, 'storm_manager'):
-            for storm in estimator.wind.storm_manager.storms:
-                cx, cy = storm.center_xy[0]/1000.0, storm.center_xy[1]/1000.0
-                r = storm.radius_m/1000.0
-                vx, vy = storm.velocity_xy[0]/1000.0, storm.velocity_xy[1]/1000.0
-                circle = patches.Circle((cx, cy), r, linewidth=1.5, edgecolor='navy', facecolor='navy', alpha=0.3)
-                ax.add_patch(circle)
+    # ---------------------------
+    # Tab 1: 算法矩阵对比
+    # ---------------------------
+    with tab_matrix:
+        col_m1, col_m2 = st.columns([1.5, 1])
+        with col_m1:
+            st.plotly_chart(create_map_preview(preview_map, (start_x, start_y), (goal_x, goal_y)), use_container_width=True)
+        with col_m2:
+            st.info("💡 **测试说明**\n\n通过对强化学习(RL)与传统路径规划(A*)分别施加不可见微观阵风，测试抗扰动能力与生存率。单机模式强制仅运行 A*。")
+            
+            run_astar = st.checkbox("☑️ 对比项：传统 A* (A* Replanning)", value=True)
+            run_rl = st.checkbox("☑️ 对比项：强化学习微观控制 (RL Agent)", value=True, disabled=(fleet_mode == "Single"))
+            
+            st.divider()
+            run_clean = st.checkbox("☑️ 环境：无随机阵风基准环境 (Clean)", value=True)
+            run_gust = st.checkbox("☑️ 环境：注入强微观随机阵风干扰 (Gust)", value=True)
+            
+            if st.button("▶️ 一键启动选中推演矩阵", type="primary", use_container_width=True):
+                results = []
+                cases = []
                 
-                # 画未来预测箭头
-                dur = 400.0
-                ax.annotate('', xy=(cx+vx*dur, cy+vy*dur), xytext=(cx, cy),
-                            arrowprops=dict(arrowstyle="->", color="navy", ls="dashed", lw=2, alpha=0.9))
-                ax.text(cx, cy, 'Storm', color='white', fontsize=10, fontweight='bold', ha='center', va='center')
+                if run_astar:
+                    if run_clean: cases.append(("astar_clean (无阵风)", "astar", False, None))
+                    if run_gust:  cases.append(("astar_gust (阵风干扰)", "astar", True, None))
+                    
+                if run_rl and fleet_mode == "Swarm" and rl_model is not None:
+                    if run_clean: cases.append(("rl_clean (无阵风)", "rl", False, rl_model))
+                    if run_gust:  cases.append(("rl_gust (阵风干扰)", "rl", True, rl_model))
+                
+                if not cases:
+                    st.warning("⚠️ 请至少组合一种要测试的算法和环境！如果选择 RL 需确保在四机编队模式且模型已加载。")
+                else:
+                    progress_text = "正在执行 4D 物理仿真与图像/3D渲染，请耐心等待..."
+                    my_bar = st.progress(0, text=progress_text)
+                    
+                    for idx, (case_name, mode_name, disturbance_enabled, model) in enumerate(cases):
+                        folder_prefix = "ui_swarm" if fleet_mode == "Swarm" else "ui_single"
+                        output_dir = RESULTS_ROOT / f"{folder_prefix}_{case_name.split()[0]}"
+                        
+                        res = run_mission_case(case_name, mode_name, disturbance_enabled, ui_state, model, output_dir)
+                        results.append(res)
+                        my_bar.progress((idx + 1) / len(cases), text=f"✅ 已完成: {case_name}")
+                        
+                    st.session_state["matrix_results"] = results
+                    st.success("🎉 所有推演任务全部完成，结果已加载！")
 
-        # 5. 起点终点
-        ax.scatter(start_xy[0]/1000.0, start_xy[1]/1000.0, c='gold', s=150, marker='*', edgecolors='black', label='Start')
-        ax.scatter(goal_xy[0]/1000.0, goal_xy[1]/1000.0, c='red', s=150, marker='X', edgecolors='black', label='Goal')
+        matrix_results = st.session_state.get("matrix_results", [])
+        if matrix_results:
+            st.divider()
+            st.write("### 📊 推演结果与性能比对")
+            summary_df = pd.DataFrame(matrix_results)
+            st.dataframe(
+                summary_df[["场景", "控制算法", "微观扰动", "任务成功", "终止原因", "飞行耗时(s)", "消耗能量(kJ)", "重规划次数"]],
+                use_container_width=True,
+            )
+            st.write("### 🎞️ 动态复盘与 3D 可视化图集")
+            for row in matrix_results:
+                with st.expander(f"📍 {row['场景']} | 算法: {row['控制算法']} | 环境: {row['微观扰动']}"):
+                    display_artifacts(Path(row["output_dir"]), gif_name=f"{row['场景']}.gif")
 
-        ax.set_title("Wind Field RGB & Extracted Features", fontsize=12)
-        ax.set_xlabel("X (km)")
-        ax.set_ylabel("Y (km)")
-        ax.legend(loc='upper right')
-        
-        return fig
+    # ---------------------------
+    # Tab 2: 历史图库
+    # ---------------------------
+    with tab_artifacts:
+        result_dirs = list_result_dirs()
+        if not result_dirs:
+            st.info("目前尚未生成任何实验数据。")
+        else:
+            selected_dir = st.selectbox("选择要回放的历史实验归档：", result_dirs, format_func=lambda p: p.name)
+            if selected_dir:
+                gifs = list(selected_dir.glob("*.gif"))
+                gif_name = gifs[0].name if gifs else None
+                display_artifacts(selected_dir, gif_name=gif_name)
 
-    def create_elevation_profile(self, map_manager, mission_result):
-        """🌟 核心图表集成：交互式的高度剖面图 (Plotly版本体验更好)"""
-        path = np.array(mission_result.actual_flown_path_xyz)
-        if len(path) < 2: return go.Figure()
-
-        # 计算累计水平距离
-        xy_diff = np.diff(path[:, :2], axis=0)
-        dists = np.insert(np.cumsum(np.linalg.norm(xy_diff, axis=1)), 0, 0)
-        
-        # 提取地形高度
-        terrain_z = [map_manager.get_altitude(x, y) for x, y in path[:, :2]]
-        safe_z = [z + self.config.takeoff_altitude_agl for z in terrain_z]
-        
-        fig = go.Figure()
-        
-        # 地形填充
-        fig.add_trace(go.Scatter(x=dists, y=terrain_z, fill='tozeroy', mode='lines', 
-                                 line=dict(color='gray', width=1), name='地形高度 (Terrain)', opacity=0.5))
-        
-        # 红色虚线安全高度
-        fig.add_trace(go.Scatter(x=dists, y=safe_z, mode='lines', 
-                                 line=dict(color='red', width=1.5, dash='dash'), name='最低安全边界 (+AGL)'))
-        
-        # 无人机实际飞行高度
-        fig.add_trace(go.Scatter(x=dists, y=path[:, 2], mode='lines', 
-                                 line=dict(color='#00FF00', width=3), name='无人机实际轨迹'))
-
-        fig.update_layout(
-            xaxis_title="水平飞行总里程 (米)", yaxis_title="绝对海拔 (米)",
-            hovermode='x unified', margin=dict(l=20, r=20, t=40, b=20),
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-        )
-        return fig
 
 if __name__ == "__main__":
-    st.set_page_config(page_title="无人机 4D 时空规划系统", page_icon="🚁", layout="wide")
-    ui = DronePlanningUI()
-    ui.create_sidebar_config()
-    ui.create_main_interface()
+    main()

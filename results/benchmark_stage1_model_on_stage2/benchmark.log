@@ -1,0 +1,126 @@
+[2026-04-02 18:22:27,551] [INFO] 启动基准测试 (共 20 个固定 Seed)
+[2026-04-02 18:22:28,575] [INFO] 
+--- 测试环境 Seed: 00 ---
+[2026-04-02 18:22:44,116] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:22:46,281] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:22:48,221] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:22:48,221] [INFO] 
+--- 测试环境 Seed: 01 ---
+[2026-04-02 18:23:05,441] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:23:09,722] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:23:12,836] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:23:12,837] [INFO] 
+--- 测试环境 Seed: 02 ---
+[2026-04-02 18:23:39,780] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:23:43,976] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:23:46,792] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:23:46,792] [INFO] 
+--- 测试环境 Seed: 03 ---
+[2026-04-02 18:24:10,802] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:24:13,137] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:24:14,292] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:24:14,292] [INFO] 
+--- 测试环境 Seed: 04 ---
+[2026-04-02 18:24:27,304] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:24:28,680] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:24:29,701] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:24:29,701] [INFO] 
+--- 测试环境 Seed: 05 ---
+[2026-04-02 18:24:40,139] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:24:42,099] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:24:43,711] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:24:43,711] [INFO] 
+--- 测试环境 Seed: 06 ---
+[2026-04-02 18:24:50,056] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:24:51,151] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:24:51,941] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:24:51,941] [INFO] 
+--- 测试环境 Seed: 07 ---
+[2026-04-02 18:24:56,043] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:24:57,261] [INFO]   [Teacher] Success: False, Reason: no_progress
+[2026-04-02 18:24:58,081] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:24:58,081] [INFO] 
+--- 测试环境 Seed: 08 ---
+[2026-04-02 18:25:02,113] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:25:03,257] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:25:04,099] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:25:04,099] [INFO] 
+--- 测试环境 Seed: 09 ---
+[2026-04-02 18:25:05,865] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:25:06,652] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:25:07,200] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:25:07,200] [INFO] 
+--- 测试环境 Seed: 10 ---
+[2026-04-02 18:25:23,417] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:25:24,408] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:25:25,079] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:25:25,080] [INFO] 
+--- 测试环境 Seed: 11 ---
+[2026-04-02 18:25:27,425] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:25:28,306] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:25:28,898] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:25:28,898] [INFO] 
+--- 测试环境 Seed: 12 ---
+[2026-04-02 18:25:33,394] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:25:34,685] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:25:35,594] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:25:35,594] [INFO] 
+--- 测试环境 Seed: 13 ---
+[2026-04-02 18:26:51,545] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:26:52,105] [INFO]   [Teacher] Success: False, Reason: storm_or_overload
+[2026-04-02 18:26:52,651] [INFO]   [RL_Res]  Success: False, Reason: storm_or_overload
+[2026-04-02 18:26:52,651] [INFO] 
+--- 测试环境 Seed: 14 ---
+[2026-04-02 18:26:55,373] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:26:56,072] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:26:56,595] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:26:56,595] [INFO] 
+--- 测试环境 Seed: 15 ---
+[2026-04-02 18:27:52,971] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:28:10,348] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:28:27,136] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:28:27,137] [INFO] 
+--- 测试环境 Seed: 16 ---
+[2026-04-02 18:28:38,576] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:28:40,124] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:28:41,252] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:28:41,252] [INFO] 
+--- 测试环境 Seed: 17 ---
+[2026-04-02 18:28:53,090] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:28:54,376] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:28:55,270] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:28:55,270] [INFO] 
+--- 测试环境 Seed: 18 ---
+[2026-04-02 18:29:02,725] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:29:03,801] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:29:04,566] [INFO]   [RL_Res]  Success: True, Reason: goal_reached
+[2026-04-02 18:29:04,566] [INFO] 
+--- 测试环境 Seed: 19 ---
+[2026-04-02 18:29:15,761] [INFO]   [A*]      Success: True, Reason: goal_reached
+[2026-04-02 18:29:17,227] [INFO]   [Teacher] Success: True, Reason: goal_reached
+[2026-04-02 18:29:18,221] [INFO]   [RL_Res]  Success: False, Reason: storm_or_overload
+[2026-04-02 18:29:18,221] [INFO] 
+============================================================
+[2026-04-02 18:29:18,221] [INFO] 最终测评结果报表 (FINAL BENCHMARK REPORT)
+[2026-04-02 18:29:18,221] [INFO] ============================================================
+[2026-04-02 18:29:18,221] [INFO] 算法: ASTAR
+[2026-04-02 18:29:18,221] [INFO]    => 成功率: 100.0% (20/20)
+[2026-04-02 18:29:18,222] [INFO]    => 失败归因: None (Perfect)
+[2026-04-02 18:29:18,222] [INFO]    => [仅成功案例] 平均耗时: 210.9 s | 平均航程: 3164.2 m
+[2026-04-02 18:29:18,222] [INFO]    => [仅成功案例] 平均能耗: 230.4 kJ (64.0 Wh) | 巡航效率: 72.8 kJ/km
+[2026-04-02 18:29:18,222] [INFO]    => [全局全案例] 平均耗时: 210.9 s | 平均航程: 3164.2 m | 平均能耗: 230.4 kJ
+
+[2026-04-02 18:29:18,222] [INFO] 算法: TEACHER
+[2026-04-02 18:29:18,222] [INFO]    => 成功率: 90.0% (18/20)
+[2026-04-02 18:29:18,222] [INFO]    => 失败归因: no_progress:1 | storm_or_overload:1
+[2026-04-02 18:29:18,222] [INFO]    => [仅成功案例] 平均耗时: 272.2 s | 平均航程: 2994.6 m
+[2026-04-02 18:29:18,223] [INFO]    => [仅成功案例] 平均能耗: 282.7 kJ (78.5 Wh) | 巡航效率: 94.4 kJ/km
+[2026-04-02 18:29:18,223] [INFO]    => [全局全案例] 平均耗时: 260.1 s | 平均航程: 2854.3 m | 平均能耗: 268.9 kJ
+
+[2026-04-02 18:29:18,223] [INFO] 算法: RL_RESIDUAL
+[2026-04-02 18:29:18,223] [INFO]    => 成功率: 90.0% (18/20)
+[2026-04-02 18:29:18,223] [INFO]    => 失败归因: storm_or_overload:2
+[2026-04-02 18:29:18,224] [INFO]    => [仅成功案例] 平均耗时: 136.6 s | 平均航程: 2945.8 m
+[2026-04-02 18:29:18,224] [INFO]    => [仅成功案例] 平均能耗: 193.5 kJ (53.7 Wh) | 巡航效率: 65.7 kJ/km
+[2026-04-02 18:29:18,224] [INFO]    => [全局全案例] 平均耗时: 129.9 s | 平均航程: 2800.5 m | 平均能耗: 185.4 kJ
+

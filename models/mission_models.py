@@ -11,7 +11,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 Point3D = Tuple[float, float, float]
 
@@ -62,3 +62,25 @@ class MissionResult:
     total_mission_time_s: float = 0.0
     total_energy_used_j: float = 0.0
     failure_reason: Optional[str] = None
+    time_history_s: List[float] = field(default_factory=list)
+    power_history_w: List[float] = field(default_factory=list)
+    risk_history: List[float] = field(default_factory=list)
+    
+    # Swarm/FANET mission telemetry.
+    master_sync_path_xyz: List[Point3D] = field(default_factory=list)
+    scout_flown_path_xyz: List[Point3D] = field(default_factory=list)
+    relay_flown_path_xyz: List[Point3D] = field(default_factory=list)
+    support_flown_path_xyz: List[Point3D] = field(default_factory=list)
+    swarm_time_history: List[float] = field(default_factory=list)
+    link_status_history: List[Dict[str, bool]] = field(default_factory=list)
+    support_mode_history: List[str] = field(default_factory=list)
+    gust_active_history: List[bool] = field(default_factory=list)
+    master_power_history_w: List[float] = field(default_factory=list)
+    master_risk_history: List[float] = field(default_factory=list)
+    nearest_threat_distance_history_m: List[float] = field(default_factory=list)
+    first_warning_time_s: Optional[float] = None
+    first_warning_distance_m: Optional[float] = None
+    first_warning_route: Optional[str] = None
+    warning_count: int = 0
+    # Legacy compatibility field used by the original two-drone animation.
+    comm_status_history: List[bool] = field(default_factory=list)

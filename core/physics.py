@@ -1,33 +1,94 @@
-import numpy as np
-from typing import Callable, List, Tuple
-from configs.config import SimulationConfig
+"""
+无人机物理引擎模块
+
+此模块实现了无人机的空气动力学模型，包括功率计算、能耗估算和运动学模拟。
+基于经典的空气动力学原理，考虑阻力、质量、风速等因素。
+
+主要功能：
+- 功率计算：根据速度计算所需功率
+- 能耗估算：计算飞行过程中的能量消耗
+- 运动学模拟：速度、加速度、位置更新
+- 风力影响：考虑环境风对运动的影响
+
+物理模型：
+- 阻力功率：P_drag = 0.5 * ρ * Cd * A * v^3
+- 总功率：P_total = P_drag + P_base
+- 能耗：E = P * t
+- 运动：F = ma, v = v0 + at, x = x0 + vt + 0.5at^2
+
+单位：
+- 长度：米 (m)
+- 速度：米/秒 (m/s)
+- 加速度：米/秒² (m/s²)
+- 功率：瓦特 (W)
+- 能量：焦耳 (J)
+- 质量：千克 (kg)
+- 密度：千克/立方米 (kg/m³)
+- 面积：平方米 (m²)
+
+作者：项目团队
+版本：1.0.0
+更新日期：2026-04-03
+"""
+
+import numpy as np  # 数值计算库，用于向量运算和数学函数
+from typing import Callable, List, Tuple  # 类型提示，用于函数签名
+from configs.config import SimulationConfig  # 仿真配置类
 
 
 class PhysicsEngine:
     """
-    无人机物理引擎：负责计算空气动力学、功率与能耗。
+    无人机物理引擎：负责计算空气动力学、功率与能耗
 
-    所有输入输出单位均采用 SI：
-    - 速度: m/s
-    - 功率: W
-    - 距离: m
-    - 能量: J
+    此类实现了完整的无人机物理模型，包括空气阻力、功率计算、
+    能耗估算和运动状态更新。所有计算都基于经典物理学原理。
+
+    属性：
+    config (SimulationConfig): 仿真配置对象，包含物理参数
+    p_min (float): 最低平飞功率，基于巡航速度计算
+    energy_per_meter (float): 每米能耗，仅供兼容性使用
+
+    物理参数（来自config）：
+    - air_density: 空气密度 (kg/m³)
+    - drag_coeff: 阻力系数 (无量纲)
+    - frontal_area: 正面面积 (m²)
+    - drone_mass: 无人机质量 (kg)
+    - base_power: 基础功率 (W)
+    - drone_speed: 巡航速度 (m/s)
+
+    计算方法：
+    - 功率 = 基础功率 + 阻力功率
+    - 阻力功率 = 0.5 * ρ * Cd * A * v³
+    - 能耗 = 功率 * 时间
+
+    注意：
+    所有输入输出都使用SI单位制，确保计算一致性。
     """
 
     def __init__(self, config: SimulationConfig):
-        self.config = config
+        """
+        初始化物理引擎
+
+        根据配置参数计算基础物理常数，如最低平飞功率。
+
+        参数：
+        config (SimulationConfig): 包含所有物理参数的配置对象
+        """
+        self.config = config  # 保存配置引用
 
         # 基于默认巡航速度估算的最低平飞功率
+        # 公式：P_min = 0.5 * ρ * Cd * A * v³ + P_base
         self.p_min = (
             0.5
-            * self.config.air_density
-            * self.config.drag_coeff
-            * self.config.frontal_area
-            * (self.config.drone_speed ** 3)
-            + self.config.base_power
+            * self.config.air_density  # 空气密度
+            * self.config.drag_coeff   # 阻力系数
+            * self.config.frontal_area # 正面面积
+            * (self.config.drone_speed ** 3)  # 速度的三次方
+            + self.config.base_power   # 基础功率
         )
 
-        # 仅供兼容旧逻辑参考使用
+        # 每米能耗估算，仅供兼容旧逻辑参考使用
+        # 公式：E/m = P_min / v_cruise
         self.energy_per_meter = self.p_min / self.config.drone_speed
 
     def power_for_speed(self, v_air_mag: float) -> float:

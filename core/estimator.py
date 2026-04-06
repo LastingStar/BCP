@@ -19,6 +19,21 @@ class StateEstimator:
             alt += np.random.normal(0, self.config.noise_level)
         return alt
 
+    def _get_single_agent_gust(self, t_s: float) -> np.ndarray:
+        if not self.config.enable_single_agent_gusts or self.config.gust_max_speed_mps <= 0.0:
+            return np.zeros(2, dtype=float)
+
+        slot_duration = max(self.config.gust_duration_s, 1.0)
+        slot_idx = int(math.floor(max(t_s, 0.0) / slot_duration))
+        slot_seed = int(self.config.wind_seed) * 1000003 + slot_idx * 97 + 17
+        rng = np.random.default_rng(slot_seed)
+        if rng.random() >= self.config.gust_trigger_prob:
+            return np.zeros(2, dtype=float)
+
+        magnitude = float(rng.uniform(self.config.gust_min_speed_mps, self.config.gust_max_speed_mps))
+        angle = float(rng.uniform(0.0, 2.0 * np.pi))
+        return np.array([math.cos(angle), math.sin(angle)], dtype=float) * magnitude
+
     def get_wind(
             self,
             x: float,
@@ -49,18 +64,12 @@ class StateEstimator:
 
         # 3. 交给风模型计算最终风速
         wind_vec = self.wind.get_wind(x, y, height_agl, grad, z0, t_s=t_s)
+        wind_vec = wind_vec + self._get_single_agent_gust(t_s)
 
         # 4. 添加可选噪声
         if self.config.noise_level > 0:
             wind_vec = wind_vec + np.random.normal(0, self.config.noise_level, 2)
         return wind_vec
-
-    def get_risk(self, x: float, y: float, t_s: float = 0.0) -> float:
-        """获取该坐标点的环境风险值 (如：风切变、湍流强度)"""
-        # 计算风险时，可以默认用离地 50m 的风速作为参考
-        wind_vec = self.get_wind(x, y, z=-1.0, t_s=t_s)
-        turbulence = np.linalg.norm(wind_vec)
-        return float(turbulence)
 
     def get_resolution(self) -> float:
         return self.map.resolution

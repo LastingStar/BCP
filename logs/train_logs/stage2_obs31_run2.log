@@ -1,0 +1,10 @@
+[2026-04-01 17:20:03,549] [stage2_obs31_run2] [INFO] ✓ Log file: logs/train_logs/stage2_obs31_run2.log
+[2026-04-01 17:20:03,549] [stage2_obs31_run2] [INFO] Training configuration:
+[2026-04-01 17:20:03,549] [stage2_obs31_run2] [INFO]   Curriculum stage: 2
+[2026-04-01 17:20:03,549] [stage2_obs31_run2] [INFO]   Wind seed: 42
+[2026-04-01 17:20:03,549] [stage2_obs31_run2] [INFO]   Global seed: 42
+[2026-04-01 17:25:32,579] [stage2_obs31_run2] [INFO] ✓ Log file: logs/train_logs/stage2_obs31_run2.log
+[2026-04-01 17:25:32,579] [stage2_obs31_run2] [INFO] Training configuration:
+[2026-04-01 17:25:32,579] [stage2_obs31_run2] [INFO]   Curriculum stage: 2
+[2026-04-01 17:25:32,579] [stage2_obs31_run2] [INFO]   Wind seed: 42
+[2026-04-01 17:25:32,579] [stage2_obs31_run2] [INFO]   Global seed: 42

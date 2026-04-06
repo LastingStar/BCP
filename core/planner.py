@@ -87,6 +87,7 @@ class AStarPlanner:
         # 估算能量: 加权距离 * 理想平飞每米能耗（J/m） * 安全系数
         return weighted_dist_m * self.physics.energy_per_meter * self.config.heuristic_safety_factor
 
+    # 替换 core/planner.py 中的 calculate_cost 第一部分
     def calculate_cost(self, current_node: Node, next_x: float, next_y: float, next_z: float) -> Tuple[float, float]:
         """
         计算期望代价与飞行时间：能耗代价 + 基于 TKE 概率的风险代价
@@ -94,7 +95,8 @@ class AStarPlanner:
         """
         
         # --- 1. 禁飞区 (NFZ) 与 地形碰撞检测 ---
-        if self.estimator.map.is_collision(next_x, next_y, next_z):
+        # 🌟 给 A* 规划加上 150 米的安全膨胀缓冲，防止它贴边走导致 RL 切弯坠机
+        if self.estimator.map.is_collision(next_x, next_y, next_z, inflation_m=150.0):
             return float('inf'), 0.0
 
         dist_xy_m = math.hypot(next_x - current_node.x, next_y - current_node.y)
@@ -110,7 +112,12 @@ class AStarPlanner:
         segment_time_s = total_dist_m / v_total
         
         # 预测未来：计算无人机真正到达前方网格时的“未来时间”
-        arrival_time_s = current_node.time_s + segment_time_s
+        if self.config.planner_time_mode == "4d":
+            arrival_time_s = current_node.time_s + segment_time_s
+        elif self.config.planner_time_mode == "frozen_3d":
+            arrival_time_s = self.config.frozen_reference_time_s
+        else:
+            raise ValueError(f"Unsupported planner_time_mode: {self.config.planner_time_mode}")
 
         # 计算三维地速向量
         v_z = dist_z_m / segment_time_s
@@ -154,11 +161,11 @@ class AStarPlanner:
         # 仅在遇到高风险(P_crash>1%) 时偶尔打印，避免日志刷屏
         if p_crash > 0.01 and np.random.rand() < 0.02:
             print(f"\n[AI 4D预测] 预计在 T={arrival_time_s:.1f}s 抵达高危空域！坐标:({next_x/1000:.1f}km, {next_y/1000:.1f}km, 海拔{next_z:.0f}m)")
-            print(f" ├─ 微气象分析 : TKE = {tke:.2f} m²/s² (受地形/尾流/切变综合影响)")
-            print(f" ├─ 极值风险模型 : 坠机概率 P_crash = {p_crash*100:.2f}%")
-            print(f" └─ MDP 代价转化 : 正常能耗 {energy_joules:.0f} J, 附加致命惩罚 {risk_cost:.0f} J")
+            print(f"微气象分析 : TKE = {tke:.2f} m^2/s^2 (受地形/尾流/切变综合影响)")
+            print(f"极值风险模型 : 坠机概率 P_crash = {p_crash*100:.2f}%")
+            print(f"MDP 代价转化 : 正常能耗 {energy_joules:.0f} J, 附加致命惩罚 {risk_cost:.0f} J")
             if risk_cost > energy_joules * 2:
-                print(f" >>> 决策结论: 期望风险代价过高，4D A* 将主动变道绕行！")
+                print(f"决策结论: 期望风险代价过高，4D A* 将主动变道绕行！")
 
         return expected_total_cost, segment_time_s
 
@@ -188,7 +195,12 @@ class AStarPlanner:
         arrival_dist_xy = self.step_size
         arrival_dist_z = self.z_step
 
-        print(f"🚀 4D 时空搜索启动... 起点Z:{start_z:.1f}m -> 终点Z:{goal_z:.1f}m (当前任务起飞时间: {start_time_s:.1f}s)")
+      # 🌟 优化日志输出：完整打印起终点的 3D 坐标 (X, Y, Z)
+        print(
+            f"🚀 4D 时空搜索启动 | 起飞时间: T={start_time_s:.1f}s\n"
+            f"   📍 起点: X={start_pos[0]:.1f}m, Y={start_pos[1]:.1f}m, Z={start_z:.1f}m\n"
+            f"   🎯 终点: X={goal_pos[0]:.1f}m, Y={goal_pos[1]:.1f}m, Z={goal_z:.1f}m"
+        )
 
         while open_list and steps < self.config.max_steps:
             steps += 1
@@ -198,7 +210,7 @@ class AStarPlanner:
             d_xy = math.hypot(current_node.x - goal_pos[0], current_node.y - goal_pos[1])
             d_z = abs(current_node.z - goal_z)
             if d_xy < arrival_dist_xy and d_z < arrival_dist_z * 2:
-                print(f"✅ 4D 寻路成功！耗时步数: {steps}, 路线总期望代价: {current_node.g:.2f} J, 预计抵达时间: {current_node.time_s:.1f} s")
+                print(f"4D 寻路成功！耗时步数: {steps}, 路线总期望代价: {current_node.g:.2f} J, 预计抵达时间: {current_node.time_s:.1f} s")
                 return self._reconstruct_path(current_node)
 
             # 三维网格索引，用于闭集判断（防止走回头路）
