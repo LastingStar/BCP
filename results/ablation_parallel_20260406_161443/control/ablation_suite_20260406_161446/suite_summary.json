@@ -1,0 +1,7 @@
+{
+  "exp1_control": {
+    "raw_rows": 150,
+    "summary_rows": 3,
+    "output_dir": "/root/autodl-tmp/project1/project1/results/ablation_parallel_20260406_161443/control/ablation_suite_20260406_161446/exp1_control"
+  }
+}

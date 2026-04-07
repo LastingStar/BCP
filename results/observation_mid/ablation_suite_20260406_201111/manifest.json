@@ -1,0 +1,14 @@
+{
+  "exp": "observation",
+  "rl_model": "models/ppo_drone_stage3_obs31_run1_best/best_model.zip",
+  "output_root": "/root/autodl-tmp/project1/project1/results/observation_mid",
+  "control_seeds": 50,
+  "obs_train_seeds": [
+    11,
+    22
+  ],
+  "obs_total_timesteps": 200000,
+  "topology_seeds": 50,
+  "shield_seeds": 30,
+  "suite_root": "/root/autodl-tmp/project1/project1/results/observation_mid/ablation_suite_20260406_201111"
+}

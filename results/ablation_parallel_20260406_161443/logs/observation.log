@@ -1,0 +1,28 @@
+/root/miniconda3/envs/bcp_env/lib/python3.10/site-packages/stable_baselines3/common/on_policy_algorithm.py:150: UserWarning: You are trying to run PPO on the GPU, but it is primarily intended to run on the CPU when not using a CNN policy (you are using ActorCriticPolicy which should be a MlpPolicy). See https://github.com/DLR-RM/stable-baselines3/issues/1245 for more info. You can pass `device='cpu'` or `export CUDA_VISIBLE_DEVICES=` to force using the CPU.Note: The model will train, but the GPU utilization will be poor and the training might take longer than on CPU.
+  warnings.warn(
+Using cuda device
+🚀 4D 时空搜索启动 | 起飞时间: T=0.0s
+   📍 起点: X=-5379.7m, Y=6543.1m, Z=2079.2m
+   🎯 终点: X=-3226.4m, Y=8140.0m, Z=3015.7m
+4D 寻路成功！耗时步数: 38, 路线总期望代价: 360902.84 J, 预计抵达时间: 308.1 s
+Logging to /root/autodl-tmp/project1/project1/results/ablation_parallel_20260406_161443/observation/ablation_suite_20260406_161446/exp2_observation/logs/full_seed11/PPO_1
+Traceback (most recent call last):
+  File "/root/autodl-tmp/project1/project1/analysis/run_ablation_suite.py", line 538, in <module>
+    main()
+  File "/root/autodl-tmp/project1/project1/analysis/run_ablation_suite.py", line 523, in main
+    suite_summary["exp2_observation"] = run_exp2_observation(args, suite_root)
+  File "/root/autodl-tmp/project1/project1/analysis/run_ablation_suite.py", line 141, in run_exp2_observation
+    _, best_model_path = train_ppo(
+  File "/root/autodl-tmp/project1/project1/rl_training/train_ppo.py", line 294, in train_ppo
+    model.learn(total_timesteps=total_timesteps, callback=[eval_callback, checkpoint_callback], progress_bar=True)
+  File "/root/miniconda3/envs/bcp_env/lib/python3.10/site-packages/stable_baselines3/ppo/ppo.py", line 311, in learn
+    return super().learn(
+  File "/root/miniconda3/envs/bcp_env/lib/python3.10/site-packages/stable_baselines3/common/on_policy_algorithm.py", line 311, in learn
+    total_timesteps, callback = self._setup_learn(
+  File "/root/miniconda3/envs/bcp_env/lib/python3.10/site-packages/stable_baselines3/common/base_class.py", line 434, in _setup_learn
+    callback = self._init_callback(callback, progress_bar)
+  File "/root/miniconda3/envs/bcp_env/lib/python3.10/site-packages/stable_baselines3/common/base_class.py", line 378, in _init_callback
+    callback = CallbackList([callback, ProgressBarCallback()])
+  File "/root/miniconda3/envs/bcp_env/lib/python3.10/site-packages/stable_baselines3/common/callbacks.py", line 710, in __init__
+    raise ImportError(
+ImportError: You must install tqdm and rich in order to use the progress bar callback. It is included if you install stable-baselines with the extra packages: `pip install stable-baselines3[extra]`

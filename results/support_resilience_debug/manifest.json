@@ -1,0 +1,64 @@
+{
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "representative_seed": 0,
+  "failure_trigger_time_s": 120.0,
+  "generate_gif": true,
+  "enable_random_gusts": false,
+  "requested_master_mode": "rl",
+  "resolved_master_mode": "rl",
+  "rl_model": "models/ppo_drone_stage3_obs31_run1_best/best_model.zip",
+  "cases": [
+    {
+      "name": "normal",
+      "failure_mode": "none",
+      "allow_support_takeover": true,
+      "allow_support_bridge": true,
+      "allow_support_scan": true,
+      "description": "Baseline four-drone swarm with full support roles enabled."
+    },
+    {
+      "name": "relay_fail",
+      "failure_mode": "relay_fail",
+      "allow_support_takeover": false,
+      "allow_support_bridge": false,
+      "allow_support_scan": false,
+      "description": "Relay fails and support is not allowed to compensate."
+    },
+    {
+      "name": "relay_fail_with_support",
+      "failure_mode": "relay_fail",
+      "allow_support_takeover": true,
+      "allow_support_bridge": true,
+      "allow_support_scan": true,
+      "description": "Relay fails and support is allowed to bridge/take over."
+    },
+    {
+      "name": "scout_fail",
+      "failure_mode": "scout_fail",
+      "allow_support_takeover": false,
+      "allow_support_bridge": false,
+      "allow_support_scan": false,
+      "description": "Scout sensing fails and support is not allowed to compensate."
+    },
+    {
+      "name": "scout_fail_with_support",
+      "failure_mode": "scout_fail",
+      "allow_support_takeover": true,
+      "allow_support_bridge": false,
+      "allow_support_scan": true,
+      "description": "Scout sensing fails and support is allowed to move forward and provide backup scanning."
+    },
+    {
+      "name": "scout_fail_with_full_support",
+      "failure_mode": "scout_fail",
+      "allow_support_takeover": true,
+      "allow_support_bridge": true,
+      "allow_support_scan": true,
+      "description": "Scout sensing fails and support is allowed to scan, bridge, and move forward as a redundant node."
+    }
+  ]
+}

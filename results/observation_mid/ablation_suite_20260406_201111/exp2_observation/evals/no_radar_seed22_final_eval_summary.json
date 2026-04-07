@@ -1,0 +1,9 @@
+{
+  "mean_reward": 53.67474544278507,
+  "std_reward": 26.860349966184625,
+  "mean_length": 90.78,
+  "success_rate": 0.84,
+  "storm_risk_fail_rate": 0.0,
+  "max_p_crash_mean": 2.0678745214564033e-06,
+  "max_p_crash_max": 0.00010210214443617804
+}
