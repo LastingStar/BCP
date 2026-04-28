@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+import io
 from pathlib import Path
 
 # 确保项目根目录在环境变量中
@@ -13,8 +14,14 @@ if project_root not in sys.path:
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.figure_factory as ff
+import cv2
 import streamlit as st
 import streamlit.components.v1 as components  # 🌟 新增：用于加载本地 3D HTML
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 from configs.config import SimulationConfig
 from core.battery_manager import BatteryManager
@@ -47,7 +54,7 @@ def load_rl_model_cached(model_path: str):
     return PPO.load(str(model_file), device="cpu")
 
 
-def create_map_preview(map_manager: MapManager, start_xy, goal_xy):
+def create_map_preview(map_manager: MapManager, start_xy, goal_xy, nfz_list_km=None):
     """创建 Plotly 交互式地图 2D 预览"""
     step = max(1, map_manager.size_x // 100)
     fig = go.Figure(
@@ -82,13 +89,287 @@ def create_map_preview(map_manager: MapManager, start_xy, goal_xy):
             name="终点",
         )
     )
+    _add_nfz_overlay(fig, nfz_list_km or [])
+    x_min, x_max = float(map_manager.x[0]), float(map_manager.x[-1])
+    y_min, y_max = float(map_manager.y[0]), float(map_manager.y[-1])
     fig.update_layout(
         height=500, 
         margin=dict(l=20, r=20, t=40, b=20), 
         title="当前配置任务地图预览",
-        yaxis=dict(scaleanchor="x", scaleratio=1) # 强制正方形比例
+        xaxis=dict(range=[x_min, x_max]),
+        yaxis=dict(range=[y_min, y_max], scaleanchor="x", scaleratio=1), # 强制正方形比例
     )
     return fig
+
+
+def _add_nfz_overlay(fig, nfz_list_km):
+    """在 Plotly 图上叠加 NFZ 圆形边界（单位 km -> m）"""
+    if not nfz_list_km:
+        return
+
+    for idx, (cx_km, cy_km, r_km) in enumerate(nfz_list_km):
+        cx_m = float(cx_km) * 1000.0
+        cy_m = float(cy_km) * 1000.0
+        r_m = max(float(r_km), 0.0) * 1000.0
+        fig.add_shape(
+            type="circle",
+            xref="x",
+            yref="y",
+            x0=cx_m - r_m,
+            x1=cx_m + r_m,
+            y0=cy_m - r_m,
+            y1=cy_m + r_m,
+            line=dict(color="red", width=2),
+            fillcolor="rgba(255,0,0,0.08)",
+        )
+        fig.add_annotation(
+            x=cx_m,
+            y=cy_m,
+            text=f"NFZ {idx + 1}",
+            showarrow=False,
+            font=dict(color="red", size=11),
+        )
+
+
+def create_terrain_preview(map_manager: MapManager, nfz_list_km=None):
+    """生成纯地形预览图（不含起终点）"""
+    step = max(1, map_manager.size_x // 100)
+    fig = go.Figure(
+        data=go.Contour(
+            z=map_manager.dem[::step, ::step],
+            x=map_manager.x[::step],
+            y=map_manager.y[::step],
+            colorscale="Earth",
+            contours_coloring="heatmap",
+            colorbar=dict(title="海拔 (m)"),
+        )
+    )
+    _add_nfz_overlay(fig, nfz_list_km or [])
+    x_min, x_max = float(map_manager.x[0]), float(map_manager.x[-1])
+    y_min, y_max = float(map_manager.y[0]), float(map_manager.y[-1])
+    fig.update_layout(
+        height=460,
+        margin=dict(l=20, r=20, t=40, b=20),
+        title="地形图预览",
+        xaxis=dict(range=[x_min, x_max]),
+        yaxis=dict(range=[y_min, y_max], scaleanchor="x", scaleratio=1),
+    )
+    return fig
+
+
+def create_terrain_wind_preview(map_manager: MapManager, estimator: StateEstimator, config: SimulationConfig, nfz_list_km=None):
+    """生成地形风场图（风速热力 + 稀疏风向箭头）"""
+    sample_step = max(1, map_manager.size_x // 70)
+    x_sub = map_manager.x[::sample_step]
+    y_sub = map_manager.y[::sample_step]
+    X, Y = np.meshgrid(x_sub, y_sub)
+
+    U = np.zeros_like(X, dtype=float)
+    V = np.zeros_like(Y, dtype=float)
+
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            x = float(X[i, j])
+            y = float(Y[i, j])
+            z = float(map_manager.get_altitude(x, y) + config.takeoff_altitude_agl)
+            wind = estimator.get_wind(x, y, z, t_s=0.0)
+            U[i, j] = float(wind[0])
+            V[i, j] = float(wind[1])
+
+    wind_speed = np.sqrt(U**2 + V**2)
+    fig = go.Figure(
+        data=go.Contour(
+            z=wind_speed,
+            x=x_sub,
+            y=y_sub,
+            colorscale="Turbo",
+            contours_coloring="heatmap",
+            colorbar=dict(title="风速 (m/s)"),
+        )
+    )
+
+    # 风向箭头：适度增密 + 加长（固定长度，不按风速放大，避免拉爆坐标轴）
+    x_min, x_max = float(map_manager.x[0]), float(map_manager.x[-1])
+    y_min, y_max = float(map_manager.y[0]), float(map_manager.y[-1])
+    arrow_stride = max(1, X.shape[0] // 14)
+    arrow_length = max((x_max - x_min) / 24.0, map_manager.resolution * 6.0)
+    min_speed_to_draw = 0.05
+    xq = []
+    yq = []
+    uq = []
+    vq = []
+    for i in range(0, X.shape[0], arrow_stride):
+        for j in range(0, X.shape[1], arrow_stride):
+            x0 = float(X[i, j])
+            y0 = float(Y[i, j])
+            u = float(U[i, j])
+            v = float(V[i, j])
+            speed = float(np.hypot(u, v))
+            if speed < min_speed_to_draw:
+                continue
+            ux = u / speed
+            uy = v / speed
+            xq.append(x0)
+            yq.append(y0)
+            uq.append(ux * arrow_length)
+            vq.append(uy * arrow_length)
+
+    if xq:
+        quiver_fig = ff.create_quiver(
+            xq,
+            yq,
+            uq,
+            vq,
+            scale=1.0,
+            arrow_scale=0.32,
+            angle=np.pi / 8.5,
+            line=dict(color="white", width=1.15),
+            name="wind_vectors",
+        )
+        for tr in quiver_fig.data:
+            tr.opacity = 0.86
+            tr.hoverinfo = "skip"
+            tr.showlegend = False
+            fig.add_trace(tr)
+
+    _add_nfz_overlay(fig, nfz_list_km or [])
+    fig.update_layout(
+        height=460,
+        margin=dict(l=20, r=20, t=40, b=20),
+        title="地形风场图 (t=0)",
+        xaxis=dict(range=[x_min, x_max]),
+        yaxis=dict(range=[y_min, y_max], scaleanchor="x", scaleratio=1),
+    )
+    return fig
+
+
+def build_environment_config(env_state: dict) -> SimulationConfig:
+    """仅根据地形/地图/风场参数构建环境配置"""
+    config = SimulationConfig()
+    config.enable_storms = True
+
+    config.map_path = env_state["map_path"]
+    config.map_size_km = env_state["map_size_km"]
+    config.min_alt = env_state["min_alt"]
+    config.max_alt = env_state["max_alt"]
+    config.target_size = (env_state["map_resolution"], env_state["map_resolution"])
+
+    config.time_of_day = env_state["time_of_day"]
+    config.env_wind_u = env_state["env_wind_u"]
+    config.env_wind_v = env_state["env_wind_v"]
+    config.enable_nfz = env_state["enable_nfz"]
+    config.nfz_list_km = [tuple(zone) for zone in env_state.get("nfz_list_km", config.nfz_list_km)]
+    config.wind_seed = env_state["wind_seed"]
+    config.storm_count = env_state["storm_count"]
+    return config
+
+
+def build_environment_preview(env_state: dict):
+    """构建环境预览对象：config, map_manager, estimator"""
+    config = build_environment_config(env_state)
+    map_manager = MapManager(config)
+    wind_model = WindModelFactory.create(config.wind_model_type, config, bounds=map_manager.get_bounds())
+    estimator = StateEstimator(map_manager, wind_model, config)
+    return config, map_manager, estimator
+
+
+def load_image_preview_for_streamlit(image_path: str):
+    """读取任意位深的图片并转换为 Streamlit 可稳定显示的 uint8 预览图。"""
+    img = None
+    try:
+        raw = np.fromfile(image_path, dtype=np.uint8)
+        if raw.size > 0:
+            img = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
+    except Exception:
+        img = None
+
+    if img is None:
+        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        return None
+
+    if img.ndim == 3:
+        if img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    if img.dtype != np.uint8:
+        arr = img.astype(np.float32)
+        min_v = float(np.nanmin(arr))
+        max_v = float(np.nanmax(arr))
+        if max_v > min_v:
+            arr = (arr - min_v) / (max_v - min_v)
+            arr = arr * 255.0
+        else:
+            arr = np.zeros_like(arr, dtype=np.float32)
+        img = np.clip(arr, 0, 255).astype(np.uint8)
+
+    return img
+
+
+def _to_gray_u8(arr: np.ndarray) -> np.ndarray:
+    """将任意位深/通道图片转为灰度 uint8。"""
+    img = arr
+    if img.ndim == 3:
+        if img.shape[2] == 4:
+            img = img[:, :, :3]
+        img = img.astype(np.float32).mean(axis=2)
+    elif img.ndim != 2:
+        img = np.squeeze(img)
+        if img.ndim != 2:
+            raise ValueError(f"不支持的图片维度: {img.shape}")
+
+    if img.dtype != np.uint8:
+        img = img.astype(np.float32)
+        min_v = float(np.nanmin(img))
+        max_v = float(np.nanmax(img))
+        if max_v > min_v:
+            img = (img - min_v) / (max_v - min_v)
+        else:
+            img = np.zeros_like(img, dtype=np.float32)
+        img = np.clip(img * 255.0, 0, 255).astype(np.uint8)
+    return img
+
+
+def save_uploaded_map_as_stable_png(uploaded_file, out_path: str) -> tuple[bool, str]:
+    """
+    将上传图片标准化并保存为稳定可读的灰度 PNG。
+    这样 MapManager 总是读取同一种格式，避免因源文件位深/编码差异回退虚拟地形。
+    """
+    try:
+        data = uploaded_file.getvalue()
+        if not data:
+            return False, "上传文件为空。"
+
+        img = None
+        try:
+            raw = np.frombuffer(data, dtype=np.uint8)
+            if raw.size > 0:
+                img = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
+        except Exception:
+            img = None
+
+        if img is None and Image is not None:
+            try:
+                with Image.open(io.BytesIO(data)) as pil_img:
+                    img = np.array(pil_img)
+            except Exception:
+                img = None
+
+        if img is None:
+            return False, "图片解码失败（cv2/PIL 均无法读取）。"
+
+        gray_u8 = _to_gray_u8(img)
+        ok, encoded = cv2.imencode(".png", gray_u8)
+        if not ok:
+            return False, "PNG 编码失败。"
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        encoded.tofile(out_path)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def save_3d_interactive_html(map_manager: MapManager, mission_result, save_path: Path):
@@ -159,6 +440,7 @@ def apply_ui_config(ui_state: dict, disturbance_enabled: bool = False) -> Simula
     config.env_wind_u = ui_state["env_wind_u"]
     config.env_wind_v = ui_state["env_wind_v"]
     config.enable_nfz = ui_state["enable_nfz"]
+    config.nfz_list_km = [tuple(zone) for zone in ui_state.get("nfz_list_km", config.nfz_list_km)]
 
     # 2. 风暴与阵风
     config.wind_seed = ui_state["wind_seed"]
@@ -306,42 +588,179 @@ def main():
     st.title("🛰️ 4D 时空极值风险规避与协同控制中心")
     st.caption("支持自定义高程地图导入、单/多机编队切换，以及不同算法抗环境扰动的矩阵测评与 3D 可视化。")
 
+    if "env_confirmed" not in st.session_state:
+        st.session_state["env_confirmed"] = False
+    if "env_confirmed_state" not in st.session_state:
+        st.session_state["env_confirmed_state"] = None
+    if "env_confirm_error" not in st.session_state:
+        st.session_state["env_confirm_error"] = ""
+
     # ==========================
-    # 侧边栏：多维度配置区
+    # Step 1: 先确认地形/地图/风场参数
     # ==========================
-    st.sidebar.header("🗺️ 地形与地图参数设定")
-    
-    # 1. 自定义地图上传
-    uploaded_map = st.sidebar.file_uploader("1. 上传自定义高程图 (PNG/JPG)", type=["png", "jpg", "jpeg"], help="不上传则使用默认的瑞士雪山地图。建议上传正方形图片。")
+    st.sidebar.header("Step 1/2 · 地形与风场确认")
+    uploaded_map_ok = False
+    uploaded_map_error = ""
+    uploaded_map = st.sidebar.file_uploader(
+        "1. 上传自定义高程图 (PNG/JPG)",
+        type=["png", "jpg", "jpeg"],
+        help="不上传则使用默认的瑞士雪山地图。建议上传正方形图片。",
+    )
     default_config = SimulationConfig()
-    
     if uploaded_map is not None:
         temp_map_path = os.path.join(project_root, "temp_uploaded_map.png")
-        with open(temp_map_path, "wb") as f:
-            f.write(uploaded_map.getbuffer())
-        map_path = temp_map_path
+        uploaded_map_ok, uploaded_map_error = save_uploaded_map_as_stable_png(uploaded_map, temp_map_path)
+        if uploaded_map_ok:
+            map_path = temp_map_path
+        else:
+            map_path = default_config.map_path
+            st.sidebar.error(f"上传图预处理失败，已回退默认地图：{uploaded_map_error}")
     else:
         map_path = default_config.map_path
 
-    # 地图物理属性 (开放设置)
     map_size_km = st.sidebar.number_input("2. 地图物理边长 (km)", value=17.28, step=1.0, help="定义这张图片在真实世界里代表多宽。")
     col_alt1, col_alt2 = st.sidebar.columns(2)
     min_alt = col_alt1.number_input("最低海拔(m)", value=563.0, step=50.0)
     max_alt = col_alt2.number_input("最高海拔(m)", value=3985.4, step=50.0)
     map_res = st.sidebar.slider("3. 内部解析分辨率 (像素)", 100, 600, 300, 50, help="值越大网格越精细，但 A* 寻路会变慢。")
-    
-    st.sidebar.header("🌤️ 气象与环境")
+
     time_of_day = st.sidebar.selectbox("昼夜模式 (影响地形风向)", ["Day (白昼)", "Night (夜晚)"], index=1)
     time_val = "Day" if "Day" in time_of_day else "Night"
-    
     col_wind1, col_wind2 = st.sidebar.columns(2)
     env_wind_u = col_wind1.number_input("恒定背景风向 X (m/s)", value=-3.0, step=1.0)
     env_wind_v = col_wind2.number_input("恒定背景风向 Y (m/s)", value=5.0, step=1.0)
     enable_nfz = st.sidebar.checkbox("启用静态禁飞区 (NFZ)", value=True)
 
-    with st.sidebar.expander("🌪️ 动态风暴与微观阵风设定", expanded=False):
-        wind_seed = st.number_input("随机风暴生成种子", min_value=0, value=37, step=1)
-        storm_count = st.slider("动态风暴数量", 1, 8, 3)
+    default_nfz = [(float(cx), float(cy), float(r)) for (cx, cy, r) in SimulationConfig().nfz_list_km]
+    if "nfz_zone_count" not in st.session_state:
+        st.session_state["nfz_zone_count"] = len(default_nfz)
+    zone_count = st.sidebar.number_input(
+        "禁飞区数量",
+        min_value=0,
+        max_value=10,
+        value=int(st.session_state["nfz_zone_count"]),
+        step=1,
+    )
+    st.session_state["nfz_zone_count"] = int(zone_count)
+
+    nfz_list_km = []
+    if enable_nfz:
+        with st.sidebar.expander("🚫 禁飞区坐标设置 (单位: km)", expanded=False):
+            st.caption("每个禁飞区由中心坐标 (X, Y) 和半径 R 构成。")
+            for idx in range(int(zone_count)):
+                base = default_nfz[idx] if idx < len(default_nfz) else (0.0, 0.0, 1.0)
+                c1, c2, c3 = st.columns(3)
+                cx_km = c1.number_input(f"Z{idx+1} X", value=float(base[0]), step=0.1, key=f"nfz_x_{idx}")
+                cy_km = c2.number_input(f"Z{idx+1} Y", value=float(base[1]), step=0.1, key=f"nfz_y_{idx}")
+                r_km = c3.number_input(f"Z{idx+1} R", min_value=0.0, value=float(base[2]), step=0.1, key=f"nfz_r_{idx}")
+                nfz_list_km.append((float(cx_km), float(cy_km), float(r_km)))
+    else:
+        nfz_list_km = []
+
+    wind_seed = st.sidebar.number_input("随机风暴生成种子", min_value=0, value=37, step=1)
+    storm_count = st.sidebar.slider("动态风暴数量", 1, 8, 3)
+
+    candidate_env_state = {
+        "map_path": map_path,
+        "map_size_km": map_size_km,
+        "min_alt": min_alt,
+        "max_alt": max_alt,
+        "map_resolution": map_res,
+        "time_of_day": time_val,
+        "env_wind_u": env_wind_u,
+        "env_wind_v": env_wind_v,
+        "enable_nfz": enable_nfz,
+        "nfz_list_km": nfz_list_km,
+        "wind_seed": int(wind_seed),
+        "storm_count": int(storm_count),
+        "custom_map_uploaded": uploaded_map is not None and uploaded_map_ok,
+        "uploaded_map_error": uploaded_map_error,
+    }
+
+    col_c1, col_c2 = st.sidebar.columns(2)
+    if col_c1.button("✅ 确认参数并生成地形图", use_container_width=True):
+        try:
+            _cfg, _map, _est = build_environment_preview(candidate_env_state)
+            if candidate_env_state.get("custom_map_uploaded", False) and not getattr(_map, "map_loaded_from_file", True):
+                raise ValueError(
+                    "上传地图读取失败，当前结果是回退的虚拟地形。"
+                    "请检查图片格式或路径（Windows 中文路径可尝试重传后再确认）。"
+                )
+            st.session_state["env_confirmed_state"] = candidate_env_state
+            st.session_state["env_confirmed"] = True
+            st.session_state["env_confirm_error"] = ""
+        except Exception as exc:
+            st.session_state["env_confirmed"] = False
+            st.session_state["env_confirm_error"] = str(exc)
+        st.rerun()
+
+    if col_c2.button("🔄 重新编辑", use_container_width=True):
+        st.session_state["env_confirmed"] = False
+        st.session_state["env_confirmed_state"] = None
+        st.session_state["env_confirm_error"] = ""
+        st.rerun()
+
+    if st.session_state.get("env_confirm_error"):
+        st.sidebar.error(f"参数确认失败：{st.session_state['env_confirm_error']}")
+    elif candidate_env_state.get("uploaded_map_error"):
+        st.sidebar.warning(f"上传图处理提示：{candidate_env_state['uploaded_map_error']}")
+
+    if not st.session_state.get("env_confirmed") or st.session_state.get("env_confirmed_state") is None:
+        st.info("请先在左侧完成 Step 1：设置地形/地图/风场参数并点击“确认参数并生成地形图”。")
+        return
+
+    env_state = st.session_state["env_confirmed_state"]
+    st.success("✅ Step 1 已完成：地形与风场参数已锁定。你现在可以查看预览图，并进入后续任务参数配置。")
+
+    try:
+        env_config, env_map, env_estimator = build_environment_preview(env_state)
+    except Exception as exc:
+        st.error(f"环境预览构建失败：{exc}")
+        return
+
+    map_status = "已从文件成功读取" if getattr(env_map, "map_loaded_from_file", False) else "未读取到文件，使用了虚拟地形"
+    st.caption(f"地图加载状态：{map_status}")
+    st.caption(f"地图来源路径：{getattr(env_map, 'map_source_path', env_state.get('map_path', ''))}")
+
+    if not getattr(env_map, "map_loaded_from_file", True):
+        st.warning(
+            "⚠️ 当前显示的是回退虚拟地形（未成功读取地图文件）。"
+            "请重新上传图片并点击“确认参数并生成地形图”。"
+        )
+        if getattr(env_map, "map_load_error", ""):
+            st.error(f"读取失败原因：{env_map.map_load_error}")
+
+    st.write("### 🗺️ Step 1 结果预览")
+    if env_state.get("custom_map_uploaded", False):
+        with st.expander("查看上传原图", expanded=False):
+            preview_img = load_image_preview_for_streamlit(env_state["map_path"])
+            if preview_img is None:
+                st.warning("原图预览失败：无法读取上传图片。")
+            else:
+                st.image(
+                    preview_img,
+                    caption="上传的原始高程图（已转换为预览格式）",
+                    use_container_width=True,
+                    clamp=True,
+                    output_format="PNG",
+                )
+
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.plotly_chart(create_terrain_preview(env_map, env_state.get("nfz_list_km", [])), use_container_width=True)
+    with col_p2:
+        st.plotly_chart(
+            create_terrain_wind_preview(env_map, env_estimator, env_config, env_state.get("nfz_list_km", [])),
+            use_container_width=True,
+        )
+
+    # ==========================
+    # Step 2: 再配置任务与路径规划参数
+    # ==========================
+    st.sidebar.divider()
+    st.sidebar.header("Step 2/2 · 任务与路径规划参数")
+
+    with st.sidebar.expander("🌪️ 微观阵风扰动设定", expanded=False):
         gust_trigger_prob = st.slider("随机阵风触发概率", 0.0, 0.1, 0.02, 0.01)
         gust_duration_s = st.slider("单次阵风持续时间 (s)", 2.0, 30.0, 8.0, 2.0)
         gust_min_speed_mps = st.number_input("阵风最低风速 (m/s)", value=4.0)
@@ -371,41 +790,30 @@ def main():
     # 顶部控制：模式与起终点
     # ==========================
     st.subheader("🛠️ 任务编队与坐标设定")
-    
+    map_size_km_locked = float(env_state["map_size_km"])
+
     col_top1, col_top2 = st.columns([1, 2])
     with col_top1:
         fleet_mode_str = st.radio("选择出击机群规模：", ["四机编队 (FANET Swarm)", "单机模式 (Single Drone)"])
         fleet_mode = "Swarm" if "四机" in fleet_mode_str else "Single"
-        
         if fleet_mode == "Single":
             st.warning("⚠️ 警告：单机模式视野严重受限！失去预警与护盾掩护后，迎面撞上风暴大概率坠机！此外，本系统单机回退使用传统 A* 算法。")
-            
+
     with col_top2:
-        # 🌟 根据用户设定的地图物理尺寸自动限制滑块的范围，防止越界
-        half_m = float((map_size_km * 1000) / 2)
-        def clamp(v): return max(-half_m, min(v, half_m))
-        
+        half_m = float((map_size_km_locked * 1000) / 2)
+
+        def clamp(v):
+            return max(-half_m, min(v, half_m))
+
         st.write("请在滑块上拖动或直接点击数字修改（单位：米）：")
         col_coord1, col_coord2 = st.columns(2)
-        # 默认值优先取限制后的合理值
         start_x = col_coord1.slider("起点 X (m)", -half_m, half_m, clamp(-8000.0), 100.0)
         start_y = col_coord2.slider("起点 Y (m)", -half_m, half_m, clamp(-8000.0), 100.0)
         goal_x = col_coord1.slider("终点 X (m)", -half_m, half_m, clamp(6000.0), 100.0)
         goal_y = col_coord2.slider("终点 Y (m)", -half_m, half_m, clamp(7500.0), 100.0)
 
-    # 汇总 UI 状态
     ui_state = {
-        "map_path": map_path,
-        "map_size_km": map_size_km,
-        "min_alt": min_alt,
-        "max_alt": max_alt,
-        "map_resolution": map_res,
-        "time_of_day": time_val,
-        "env_wind_u": env_wind_u,
-        "env_wind_v": env_wind_v,
-        "enable_nfz": enable_nfz,
-        "wind_seed": wind_seed,
-        "storm_count": storm_count,
+        **env_state,
         "gust_trigger_prob": gust_trigger_prob,
         "gust_duration_s": gust_duration_s,
         "gust_min_speed_mps": gust_min_speed_mps,
@@ -414,9 +822,9 @@ def main():
         "max_power": max_power,
         "heuristic_safety_factor": heuristic_safety_factor,
         "max_replans": max_replans,
-        "enable_support_shield_mode": locals().get("enable_support_shield_mode", False),
-        "support_shield_master_radius_m": locals().get("support_shield_master_radius_m", 1400.0),
-        "support_shield_offset_m": locals().get("support_shield_offset_m", 450.0),
+        "enable_support_shield_mode": enable_support_shield_mode,
+        "support_shield_master_radius_m": support_shield_master_radius_m,
+        "support_shield_offset_m": support_shield_offset_m,
         "gust_obs_noise_std": gust_obs_noise_std,
         "fleet_mode": fleet_mode,
         "matrix_start": (start_x, start_y),
@@ -426,54 +834,54 @@ def main():
     # ==========================
     # 主体界面 Tabs
     # ==========================
-    preview_config = apply_ui_config(ui_state, disturbance_enabled=False)
-    preview_map = MapManager(preview_config)
-
+    preview_map = env_map
     tab_matrix, tab_artifacts = st.tabs(["🚀 任务推演大厅", "📂 历史成果画廊"])
 
-    # ---------------------------
-    # Tab 1: 算法矩阵对比
-    # ---------------------------
     with tab_matrix:
         col_m1, col_m2 = st.columns([1.5, 1])
         with col_m1:
-            st.plotly_chart(create_map_preview(preview_map, (start_x, start_y), (goal_x, goal_y)), use_container_width=True)
+            st.plotly_chart(
+                create_map_preview(preview_map, (start_x, start_y), (goal_x, goal_y), env_state.get("nfz_list_km", [])),
+                use_container_width=True,
+            )
         with col_m2:
             st.info("💡 **测试说明**\n\n通过对强化学习(RL)与传统路径规划(A*)分别施加不可见微观阵风，测试抗扰动能力与生存率。单机模式强制仅运行 A*。")
-            
+
             run_astar = st.checkbox("☑️ 对比项：传统 A* (A* Replanning)", value=True)
             run_rl = st.checkbox("☑️ 对比项：强化学习微观控制 (RL Agent)", value=True, disabled=(fleet_mode == "Single"))
-            
+
             st.divider()
             run_clean = st.checkbox("☑️ 环境：无随机阵风基准环境 (Clean)", value=True)
             run_gust = st.checkbox("☑️ 环境：注入强微观随机阵风干扰 (Gust)", value=True)
-            
+
             if st.button("▶️ 一键启动选中推演矩阵", type="primary", use_container_width=True):
                 results = []
                 cases = []
-                
+
                 if run_astar:
-                    if run_clean: cases.append(("astar_clean (无阵风)", "astar", False, None))
-                    if run_gust:  cases.append(("astar_gust (阵风干扰)", "astar", True, None))
-                    
+                    if run_clean:
+                        cases.append(("astar_clean (无阵风)", "astar", False, None))
+                    if run_gust:
+                        cases.append(("astar_gust (阵风干扰)", "astar", True, None))
+
                 if run_rl and fleet_mode == "Swarm" and rl_model is not None:
-                    if run_clean: cases.append(("rl_clean (无阵风)", "rl", False, rl_model))
-                    if run_gust:  cases.append(("rl_gust (阵风干扰)", "rl", True, rl_model))
-                
+                    if run_clean:
+                        cases.append(("rl_clean (无阵风)", "rl", False, rl_model))
+                    if run_gust:
+                        cases.append(("rl_gust (阵风干扰)", "rl", True, rl_model))
+
                 if not cases:
                     st.warning("⚠️ 请至少组合一种要测试的算法和环境！如果选择 RL 需确保在四机编队模式且模型已加载。")
                 else:
                     progress_text = "正在执行 4D 物理仿真与图像/3D渲染，请耐心等待..."
                     my_bar = st.progress(0, text=progress_text)
-                    
                     for idx, (case_name, mode_name, disturbance_enabled, model) in enumerate(cases):
                         folder_prefix = "ui_swarm" if fleet_mode == "Swarm" else "ui_single"
                         output_dir = RESULTS_ROOT / f"{folder_prefix}_{case_name.split()[0]}"
-                        
                         res = run_mission_case(case_name, mode_name, disturbance_enabled, ui_state, model, output_dir)
                         results.append(res)
                         my_bar.progress((idx + 1) / len(cases), text=f"✅ 已完成: {case_name}")
-                        
+
                     st.session_state["matrix_results"] = results
                     st.success("🎉 所有推演任务全部完成，结果已加载！")
 
@@ -491,9 +899,6 @@ def main():
                 with st.expander(f"📍 {row['场景']} | 算法: {row['控制算法']} | 环境: {row['微观扰动']}"):
                     display_artifacts(Path(row["output_dir"]), gif_name=f"{row['场景']}.gif")
 
-    # ---------------------------
-    # Tab 2: 历史图库
-    # ---------------------------
     with tab_artifacts:
         result_dirs = list_result_dirs()
         if not result_dirs:

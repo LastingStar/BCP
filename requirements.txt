@@ -75,3 +75,10 @@ mypy>=0.900
 # =====================
 flask>=2.0.0              # 可选：Web框架
 dash>=2.0.0              # 可选：交互式仪表板
+streamlit>=1.30.0         # Streamlit 主界面
+pywebview>=5.1            # 桌面窗口壳（嵌入本地 Streamlit）
+
+# =====================
+# Packaging / Build
+# =====================
+pyinstaller>=6.0.0        # Windows 可执行打包

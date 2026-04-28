@@ -309,6 +309,7 @@ class SimulationConfig:
     rl_progress_check_interval: int = 75
     rl_overload_power_ratio: float = 1.05
     rl_terminate_risk_threshold: float = 0.55
+    rl_enable_apas: bool = False
 
     def __post_init__(self):
         """验证配置参数的合法性，防止非法值导致运行时错误"""

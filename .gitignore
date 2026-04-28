@@ -24,3 +24,8 @@ Thumbs.db
 *.gif
 *.mp4
 mission_comparison.png
+
+# PyInstaller artifacts
+build/
+dist/
+*.pyz

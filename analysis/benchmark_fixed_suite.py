@@ -142,10 +142,14 @@ def run_env_method(
     config: SimulationConfig,
     method_kind: str,
     policy,
+    rl_enable_apas: bool = False,
 ) -> Dict:
     metrics = {"seed": seed, "method": method_kind, "success": False}
     try:
-        env = GuidedDroneEnv(copy.deepcopy(config))
+        env_config = copy.deepcopy(config)
+        if method_kind == "rl_residual":
+            env_config.rl_enable_apas = bool(rl_enable_apas)
+        env = GuidedDroneEnv(env_config)
         res, ext = run_env_episode_to_mission_result(
             env,
             policy,
@@ -267,6 +271,7 @@ def run_benchmark(
     output_dir: Path,
     curriculum_stage: int = 3,
     custom_task: Optional[dict] = None,
+    rl_enable_apas: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Starting fixed benchmark with %d seeds", len(seeds))
@@ -281,7 +286,15 @@ def run_benchmark(
         raw_rows.append(run_pure_astar(seed, start_xy, goal_xy, copy.deepcopy(fixed_config)))
         raw_rows.append(run_env_method(seed, start_xy, goal_xy, fixed_config, "teacher", TeacherPolicy()))
         if rl_model is not None:
-            rl_row = run_env_method(seed, start_xy, goal_xy, fixed_config, "rl_residual", rl_model)
+            rl_row = run_env_method(
+                seed,
+                start_xy,
+                goal_xy,
+                fixed_config,
+                "rl_residual",
+                rl_model,
+                rl_enable_apas=rl_enable_apas,
+            )
             rl_row["method"] = "rl_residual"
             raw_rows.append(rl_row)
 
@@ -300,6 +313,9 @@ def parse_args():
     parser.add_argument("--output-dir", default="results/benchmark_stage3_obs31")
     parser.add_argument("--curriculum-stage", type=int, default=3)
     parser.add_argument("--seed-count", type=int, default=20)
+    parser.add_argument("--rl-apas", dest="rl_apas", action="store_true", help="Enable APAS protection for rl_residual runs.")
+    parser.add_argument("--no-rl-apas", dest="rl_apas", action="store_false", help="Disable APAS protection for rl_residual runs.")
+    parser.set_defaults(rl_apas=True)
     return parser.parse_args()
 
 
@@ -310,4 +326,5 @@ if __name__ == "__main__":
         seeds=list(range(args.seed_count)),
         output_dir=Path(args.output_dir),
         curriculum_stage=args.curriculum_stage,
+        rl_enable_apas=args.rl_apas,
     )

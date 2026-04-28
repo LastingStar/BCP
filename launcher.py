@@ -4,18 +4,55 @@ Unified launcher for legacy planning, swarm matrix experiments, showcase demos,
 ablation experiments, and UI.
 """
 
+from __future__ import annotations
+
 import argparse
 from datetime import datetime
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
+from typing import Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ABLATION_EXPERIMENTS = ["control", "observation", "topology", "shield", "planner_time"]
 
+# Unified UI endpoint used by both launcher and desktop shell.
+UI_HOST = "localhost"
+UI_PORT = 8502
+UI_URL = f"http://{UI_HOST}:{UI_PORT}"
 
-def run_command(cmd, description):
+
+# Hint for packagers: include the Streamlit UI module dependency graph.
+# This branch is never executed at runtime.
+if False:  # pragma: no cover
+    import ui.drone_ui  # noqa: F401
+
+
+def is_frozen() -> bool:
+    """Return True when running from a PyInstaller executable."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def resolve_ui_script() -> Path:
+    """Resolve Streamlit UI script for both source and frozen modes."""
+    candidates = [
+        PROJECT_ROOT / "ui" / "drone_ui.py",
+        Path.cwd() / "ui" / "drone_ui.py",
+    ]
+    if is_frozen() and hasattr(sys, "_MEIPASS"):
+        candidates.insert(0, Path(getattr(sys, "_MEIPASS")) / "ui" / "drone_ui.py")
+
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+
+    searched = "\n".join(f"- {path}" for path in candidates)
+    raise FileNotFoundError(f"Cannot locate ui/drone_ui.py.\nSearched:\n{searched}")
+
+
+def run_command(cmd: list[str], description: str) -> bool:
+    """Run one command and return success status."""
     print(f"[RUN] {description}")
     print(f"Command: {' '.join(cmd)}")
     print("-" * 60)
@@ -30,10 +67,59 @@ def run_command(cmd, description):
         return False
 
 
-def parse_parallel_ablation_args(extra_args):
+def run_ui() -> bool:
+    """
+    Launch Streamlit UI.
+
+    - Source mode: shell out to `python -m streamlit run ...` (keeps existing behavior).
+    - Frozen mode: run Streamlit bootstrap in-process (sys.executable is not a Python interpreter).
+    """
+    ui_script = resolve_ui_script()
+
+    if not is_frozen():
+        return run_command(
+            [
+                sys.executable,
+                "-m",
+                "streamlit",
+                "run",
+                str(ui_script),
+                "--server.address",
+                UI_HOST,
+                "--server.port",
+                str(UI_PORT),
+            ],
+            f"Launch swarm command center UI ({UI_URL})",
+        )
+
+    print(f"[RUN] Launch swarm command center UI (frozen mode) at {UI_URL}")
+    print(f"Script: {ui_script}")
+    print("-" * 60)
+    try:
+        from streamlit.web import bootstrap
+
+        flag_options = {
+            "server.headless": True,
+            "server.address": UI_HOST,
+            "server.port": UI_PORT,
+            "browser.gatherUsageStats": False,
+            "browser.serverAddress": UI_HOST,
+            "server.fileWatcherType": "none",
+        }
+        bootstrap.run(str(ui_script), False, [], flag_options)
+        return True
+    except KeyboardInterrupt:
+        print("\n[WARN] UI interrupted by user")
+        return False
+    except Exception as exc:
+        print(f"[ERROR] Failed to launch UI in frozen mode: {exc}")
+        return False
+
+
+def parse_parallel_ablation_args(extra_args: Sequence[str]):
     parent_output_root = PROJECT_ROOT / "results"
     selected_experiments = list(ABLATION_EXPERIMENTS)
-    forwarded_args = []
+    forwarded_args: list[str] = []
 
     idx = 0
     while idx < len(extra_args):
@@ -48,14 +134,14 @@ def parse_parallel_ablation_args(extra_args):
         if token == "--parallel-exps":
             idx += 1
             selected_experiments = []
-            while idx < len(extra_args) and not extra_args[idx].startswith("--"):
-                parts = [part.strip() for part in extra_args[idx].split(",") if part.strip()]
+            while idx < len(extra_args) and not str(extra_args[idx]).startswith("--"):
+                parts = [part.strip() for part in str(extra_args[idx]).split(",") if part.strip()]
                 selected_experiments.extend(parts)
                 idx += 1
             if not selected_experiments:
                 selected_experiments = list(ABLATION_EXPERIMENTS)
             continue
-        forwarded_args.append(token)
+        forwarded_args.append(str(token))
         idx += 1
 
     invalid = [exp for exp in selected_experiments if exp not in ABLATION_EXPERIMENTS]
@@ -67,7 +153,7 @@ def parse_parallel_ablation_args(extra_args):
     return parent_output_root, selected_experiments, forwarded_args
 
 
-def run_parallel_ablation(extra_args):
+def run_parallel_ablation(extra_args: Sequence[str]) -> bool:
     parent_output_root, selected_experiments, forwarded_args = parse_parallel_ablation_args(extra_args)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     bundle_root = parent_output_root / f"ablation_parallel_{timestamp}"
@@ -79,7 +165,7 @@ def run_parallel_ablation(extra_args):
     print(f"Experiments: {', '.join(selected_experiments)}")
     print("-" * 60)
 
-    processes = []
+    processes: list[dict[str, object]] = []
     try:
         for experiment in selected_experiments:
             experiment_output_root = bundle_root / experiment
@@ -112,8 +198,9 @@ def run_parallel_ablation(extra_args):
 
         all_success = True
         for item in processes:
-            return_code = item["process"].wait()
-            item["log_handle"].close()
+            proc = item["process"]  # type: ignore[assignment]
+            return_code = proc.wait()  # type: ignore[attr-defined]
+            item["log_handle"].close()  # type: ignore[union-attr]
             if return_code == 0:
                 print(f"[OK] {item['experiment']} finished | log={item['log_path']}")
             else:
@@ -124,21 +211,23 @@ def run_parallel_ablation(extra_args):
     except KeyboardInterrupt:
         print("\n[WARN] Interrupted by user, terminating child jobs...")
         for item in processes:
-            proc = item["process"]
-            if proc.poll() is None:
-                proc.terminate()
+            proc = item["process"]  # type: ignore[assignment]
+            if proc.poll() is None:  # type: ignore[attr-defined]
+                proc.terminate()  # type: ignore[attr-defined]
         for item in processes:
-            item["log_handle"].close()
+            item["log_handle"].close()  # type: ignore[union-attr]
         return False
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Create argument parser."""
     parser = argparse.ArgumentParser(
         description="Drone planning project launcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
- python launcher.py ui
+  python launcher.py ui
+  python launcher.py desktop
   python launcher.py swarm
   python launcher.py showcase
   python launcher.py ablation --exp all
@@ -152,7 +241,7 @@ Examples:
     )
     parser.add_argument(
         "mode",
-        choices=["sim", "rl", "ui", "swarm", "showcase", "ablation", "ablation_parallel", "test", "install"],
+        choices=["sim", "rl", "ui", "desktop", "swarm", "showcase", "ablation", "ablation_parallel", "test", "install"],
         help="launch target",
     )
     parser.add_argument("--timesteps", type=int, default=500000, help="RL training timesteps")
@@ -162,7 +251,13 @@ Examples:
         nargs=argparse.REMAINDER,
         help="additional arguments forwarded to the selected target script",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Launcher entrypoint."""
+    parser = build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
 
     success = False
     if args.mode == "install":
@@ -178,9 +273,11 @@ Examples:
             f"Run RL training (timesteps={args.timesteps}, envs={args.envs})",
         )
     elif args.mode == "ui":
+        success = run_ui()
+    elif args.mode == "desktop":
         success = run_command(
-            [sys.executable, "-m", "streamlit", "run", str(PROJECT_ROOT / "ui" / "drone_ui.py")],
-            "Launch swarm command center UI",
+            [sys.executable, "desktop_launcher.py"],
+            "Launch desktop UI shell (pywebview + Streamlit)",
         )
     elif args.mode == "swarm":
         success = run_command(
@@ -206,10 +303,11 @@ Examples:
     print("\n" + "=" * 60)
     if success:
         print("[OK] Task finished successfully")
-    else:
-        print("[ERROR] Task failed")
-        sys.exit(1)
+        return 0
+
+    print("[ERROR] Task failed")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

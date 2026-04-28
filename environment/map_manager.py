@@ -1,16 +1,24 @@
 import numpy as np
 import cv2
 import math
+import os
 from scipy.interpolate import RegularGridInterpolator
 from configs.config import SimulationConfig
 from typing import Tuple
 from scipy.ndimage import gaussian_filter
+try:
+    from PIL import Image
+except ImportError:  # Pillow is usually available via Streamlit dependency tree
+    Image = None
 
 class MapManager:
     """地图管理器：仅负责地形高程(DEM)、梯度计算与坐标映射"""
     
     def __init__(self, config: SimulationConfig):
         self.config = config
+        self.map_loaded_from_file = False
+        self.map_load_error = ""
+        self.map_source_path = ""
         
         # 1. 先加载地图 (必须第一步！)
         self._load_map()
@@ -50,11 +58,25 @@ class MapManager:
         return float(self.interp_z0((y, x)))
 
     def _load_map(self):
-        img = cv2.imread(self.config.map_path, cv2.IMREAD_GRAYSCALE)
+        path = str(self.config.map_path)
+        img = self._read_image_any(path)
+        if img is not None:
+            img = self._to_grayscale_uint8(img)
+
         if img is None:
-            print(f"警告: 无法读取 {self.config.map_path}，将生成虚拟高斯地形。")
+            self.map_loaded_from_file = False
+            self.map_source_path = path
+            self.map_load_error = (
+                f"无法读取地图文件: {path}。"
+                "可能是图片格式不受支持或文件损坏。"
+            )
+            print(f"警告: {self.map_load_error}，将生成虚拟高斯地形。")
             self._generate_fake_map()
             return
+
+        self.map_loaded_from_file = True
+        self.map_source_path = path
+        self.map_load_error = ""
             
         img = cv2.GaussianBlur(img, (5, 5), 0)
         img = cv2.resize(img, self.config.target_size, interpolation=cv2.INTER_AREA)
@@ -71,6 +93,70 @@ class MapManager:
         self.x = np.linspace(-half_size_m, half_size_m, self.size_x)
         self.y = np.linspace(-half_size_m, half_size_m, self.size_y)
         self.X, self.Y = np.meshgrid(self.x, self.y)
+
+    def _read_image_any(self, path: str):
+        """
+        Robust image loader:
+        1) cv2.imread
+        2) np.fromfile + cv2.imdecode (better Windows non-ASCII compatibility)
+        3) PIL fallback (better 16-bit PNG/TIFF compatibility)
+        """
+        if not path or not os.path.exists(path):
+            return None
+
+        # 1) OpenCV decode from bytes (best for Windows non-ASCII path)
+        try:
+            raw = np.fromfile(path, dtype=np.uint8)
+            if raw.size > 0:
+                img = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    return img
+        except Exception:
+            pass
+
+        # 2) OpenCV direct read
+        try:
+            img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if img is not None:
+                return img
+        except Exception:
+            pass
+
+        # 3) PIL fallback
+        if Image is not None:
+            try:
+                with Image.open(path) as pil_img:
+                    return np.array(pil_img)
+            except Exception:
+                return None
+
+        return None
+
+    def _to_grayscale_uint8(self, img: np.ndarray) -> np.ndarray:
+        """Normalize any decoded image to grayscale uint8 for DEM mapping."""
+        arr = img
+        if arr.ndim == 3:
+            # Handle BGRA/RGBA/RGB/BGR conservatively by channel-averaging fallback.
+            if arr.shape[2] == 4:
+                arr = arr[:, :, :3]
+            # For both RGB and BGR this gives a valid grayscale fallback.
+            arr = arr.astype(np.float32).mean(axis=2)
+        elif arr.ndim != 2:
+            arr = np.squeeze(arr)
+            if arr.ndim != 2:
+                raise ValueError(f"Unsupported image shape: {arr.shape}")
+
+        if arr.dtype != np.uint8:
+            arr = arr.astype(np.float32)
+            min_v = float(np.nanmin(arr))
+            max_v = float(np.nanmax(arr))
+            if max_v > min_v:
+                arr = (arr - min_v) / (max_v - min_v)
+            else:
+                arr = np.zeros_like(arr, dtype=np.float32)
+            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+
+        return arr
 
     def _generate_fake_map(self):
         """Fallback: 生成虚拟地形"""

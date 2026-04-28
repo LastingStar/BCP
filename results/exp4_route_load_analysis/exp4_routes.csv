@@ -1,0 +1,7 @@
+﻿route_name,waypoint_index,x_m,y_m,description
+Route A,0,-2167.2240802675587,-7940.0,Cross-ridge route across the highest-relief vertical band.
+Route A,1,-2167.2240802675587,7940.0,Cross-ridge route across the highest-relief vertical band.
+Route B,0,4652.3076923076915,-7940.0,Valley / gentle route along the lowest-relief vertical band.
+Route B,1,4652.3076923076915,7940.0,Valley / gentle route along the lowest-relief vertical band.
+Route C,0,1242.5418060200664,-7940.0,Intermediate route between ridge-crossing and valley-following bands.
+Route C,1,1242.5418060200664,7940.0,Intermediate route between ridge-crossing and valley-following bands.

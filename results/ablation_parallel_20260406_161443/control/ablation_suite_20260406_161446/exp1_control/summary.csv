@@ -1,4 +1,0 @@
-﻿method,success_rate_pct,success_avg_energy_kj_per_km,success_avg_time_s,success_avg_energy_kj,failure_breakdown
-astar,100.0,70.51618786097364,282.7757191556976,301.1708833962891,None
-teacher,92.0,91.96547875208503,363.4782608695652,364.7603152948348,other:2 | overload:2
-rl_residual,78.0,61.45195992866049,182.66666666666666,241.17000441102164,overload:11

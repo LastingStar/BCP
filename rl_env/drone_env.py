@@ -126,6 +126,120 @@ class GuidedDroneEnv(gym.Env):
             return 0.0
         return min(np.linalg.norm(pos_xy - self._path_point(i)[:2]) for i in local_indices)
 
+    def _simulate_nominal_transition(
+        self,
+        heading_deg: float,
+        speed_mps: float,
+        desired_agl: float,
+    ) -> Dict[str, Any]:
+        rad = math.radians(heading_deg)
+        dx = speed_mps * math.cos(rad) * self.dt
+        dy = speed_mps * math.sin(rad) * self.dt
+        new_x, new_y = self._clamp_position(self.current_pos[0] + dx, self.current_pos[1] + dy)
+
+        terrain_alt = self.estimator.get_altitude(new_x, new_y)
+        new_z = terrain_alt + desired_agl
+        vz = (new_z - self.current_pos[2]) / self.dt
+
+        wind_2d = self.estimator.get_wind(new_x, new_y, new_z, t_s=self.current_time + self.dt)
+        wind_3d = np.array([wind_2d[0], wind_2d[1], 0.0], dtype=np.float64)
+        ground_velocity = np.array(
+            [
+                (new_x - self.current_pos[0]) / self.dt,
+                (new_y - self.current_pos[1]) / self.dt,
+                vz,
+            ],
+            dtype=np.float64,
+        )
+        power = float(self.physics.estimate_power_from_vectors(ground_velocity, wind_3d))
+        v_ground = float(np.linalg.norm(ground_velocity))
+        p_crash, _ = self.estimator.get_risk(
+            new_x, new_y, new_z, max(v_ground, 1.0), self.current_time + self.dt
+        )
+        return {
+            "heading_deg": heading_deg,
+            "speed_mps": float(speed_mps),
+            "new_x": float(new_x),
+            "new_y": float(new_y),
+            "new_z": float(new_z),
+            "power_w": float(power),
+            "p_crash": float(p_crash),
+            "v_ground": float(v_ground),
+        }
+
+    def _simulate_apas_transition(
+        self,
+        desired_heading_deg: float,
+        target_speed_mps: float,
+        desired_agl: float,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        power_limit = self.config.max_power * self.config.rl_overload_power_ratio
+        fatal_reason = "overload"
+        heading_candidates = [0.0, 15.0, -15.0, 30.0, -30.0, 45.0, -45.0, 60.0, -60.0, 90.0, -90.0]
+        emergency_min_speed = 1.0
+
+        for h_off in heading_candidates:
+            heading_deg = self._wrap_angle_deg(desired_heading_deg + h_off)
+            test_speed = float(target_speed_mps)
+
+            while test_speed >= emergency_min_speed:
+                rad = math.radians(heading_deg)
+                dx = test_speed * math.cos(rad) * self.dt
+                dy = test_speed * math.sin(rad) * self.dt
+                new_x, new_y = self._clamp_position(self.current_pos[0] + dx, self.current_pos[1] + dy)
+
+                terrain_alt_new = self.estimator.get_altitude(new_x, new_y)
+                theoretical_z = terrain_alt_new + desired_agl
+                vz_req = (theoretical_z - self.current_pos[2]) / self.dt
+
+                if vz_req > 8.0:
+                    fatal_reason = "terrain_or_nfz"
+                    test_speed -= 2.0
+                    continue
+
+                if vz_req < -12.0:
+                    vz_req = -12.0
+
+                actual_new_z = self.current_pos[2] + vz_req * self.dt
+                if self.estimator.map.is_collision(new_x, new_y, actual_new_z, nfz_list_km=self._current_nfz_list()):
+                    fatal_reason = "terrain_or_nfz"
+                    break
+
+                wind_2d = self.estimator.get_wind(new_x, new_y, actual_new_z, t_s=self.current_time + self.dt)
+                wind_3d = np.array([wind_2d[0], wind_2d[1], 0.0], dtype=np.float64)
+                ground_velocity = np.array(
+                    [
+                        (new_x - self.current_pos[0]) / self.dt,
+                        (new_y - self.current_pos[1]) / self.dt,
+                        vz_req,
+                    ],
+                    dtype=np.float64,
+                )
+                power = float(self.physics.estimate_power_from_vectors(ground_velocity, wind_3d))
+                if power <= power_limit:
+                    v_ground = float(np.linalg.norm(ground_velocity))
+                    p_crash, _ = self.estimator.get_risk(
+                        new_x, new_y, actual_new_z, max(v_ground, 1.0), self.current_time + self.dt
+                    )
+                    return (
+                        {
+                            "heading_deg": float(heading_deg),
+                            "speed_mps": float(test_speed),
+                            "new_x": float(new_x),
+                            "new_y": float(new_y),
+                            "new_z": float(actual_new_z),
+                            "power_w": float(power),
+                            "p_crash": float(p_crash),
+                            "v_ground": float(v_ground),
+                        },
+                        fatal_reason,
+                    )
+
+                fatal_reason = "overload"
+                test_speed -= 2.0
+
+        return None, fatal_reason
+
     def _path_total_length(self, path):
         if path is None or len(path) < 2:
             return 0.0
@@ -387,43 +501,65 @@ class GuidedDroneEnv(gym.Env):
         reward = 0.0
 
         teacher = self._teacher_reference()
-
-        self.current_heading = self._wrap_angle_deg(self.current_heading + delta_heading)
         target_speed = float(np.clip(target_speed, speed_min, speed_max))
+        desired_heading = self._wrap_angle_deg(self.current_heading + delta_heading)
 
         current_ground_alt = self.estimator.get_altitude(self.current_pos[0], self.current_pos[1])
         current_agl = max(self.min_clearance_agl, self.current_pos[2] - current_ground_alt)
         desired_agl = float(np.clip(current_agl + delta_agl, self.min_clearance_agl, self.max_clearance_agl))
 
-        rad = math.radians(self.current_heading)
-        dx = target_speed * math.cos(rad) * self.dt
-        dy = target_speed * math.sin(rad) * self.dt
+        apas_intervened = False
+        if self.config.rl_enable_apas:
+            transition, fatal_reason = self._simulate_apas_transition(desired_heading, target_speed, desired_agl)
+            if transition is None:
+                terminated = True
+                info["terminated_reason"] = fatal_reason
+                reward -= self.config.rl_collision_penalty if fatal_reason == "terrain_or_nfz" else self.config.rl_storm_penalty
+                p_now, _ = self.estimator.get_risk(
+                    self.current_pos[0],
+                    self.current_pos[1],
+                    self.current_pos[2],
+                    max(self.config.drone_speed, 1.0),
+                    self.current_time,
+                )
+                info.update(
+                    {
+                        "power_w": 0.0,
+                        "p_crash": float(p_now),
+                        "goal_dist_m": float(np.linalg.norm(self.goal_pos[:2] - self.current_pos[:2])),
+                        "path_error_m": self._estimate_local_path_error(self.current_pos[:2]),
+                        "energy_remaining_j": self.energy_remaining,
+                        "heading_err_norm": abs(self._wrap_angle_deg(self.current_heading - teacher["heading_deg"])) / 180.0,
+                        "speed_err_norm": abs(target_speed - teacher["speed_mps"]) / max(speed_max - speed_min, 1e-6),
+                        "agl_err_norm": abs(desired_agl - teacher["agl_m"]) / max(self.max_clearance_agl - self.min_clearance_agl, 1.0),
+                        "apas_intervened": True,
+                    }
+                )
+                self.telemetry_time_s.append(self.current_time)
+                self.telemetry_power_w.append(0.0)
+                self.telemetry_risk.append(float(p_now))
+                self.telemetry_max_p_crash = max(self.telemetry_max_p_crash, float(p_now))
+                return self._get_obs(), float(reward), terminated, truncated, info
+        else:
+            transition = self._simulate_nominal_transition(desired_heading, target_speed, desired_agl)
 
-        new_x, new_y = self._clamp_position(self.current_pos[0] + dx, self.current_pos[1] + dy)
-
-        terrain_alt = self.estimator.get_altitude(new_x, new_y)
-        desired_z = terrain_alt + desired_agl
-        vz = (desired_z - self.current_pos[2]) / self.dt
-        new_pos = np.array([new_x, new_y, desired_z], dtype=np.float64)
-
-        wind_2d = self.estimator.get_wind(new_x, new_y, desired_z, t_s=self.current_time + self.dt)
-        wind_3d = np.array([wind_2d[0], wind_2d[1], 0.0], dtype=np.float64)
-
-        ground_velocity = np.array([
-            (new_x - self.current_pos[0]) / self.dt,
-            (new_y - self.current_pos[1]) / self.dt,
-            vz
-        ], dtype=np.float64)
-
-        power = float(self.physics.estimate_power_from_vectors(ground_velocity, wind_3d))
-        v_ground = float(np.linalg.norm(ground_velocity))
-        p_crash, _ = self.estimator.get_risk(
-            new_x, new_y, desired_z, max(v_ground, 1.0), self.current_time + self.dt
+        new_x = transition["new_x"]
+        new_y = transition["new_y"]
+        new_z = transition["new_z"]
+        power = transition["power_w"]
+        p_crash = transition["p_crash"]
+        applied_speed = transition["speed_mps"]
+        applied_heading = transition["heading_deg"]
+        apas_intervened = self.config.rl_enable_apas and (
+            abs(self._wrap_angle_deg(applied_heading - desired_heading)) > 1e-6
+            or abs(applied_speed - target_speed) > 1e-6
         )
+        new_pos = np.array([new_x, new_y, new_z], dtype=np.float64)
 
         energy_used = power * self.dt
         self.energy_remaining -= energy_used
         self.current_time += self.dt
+        self.current_heading = applied_heading
 
         old_goal_dist = float(np.linalg.norm(self.goal_pos[:2] - self.current_pos[:2]))
         new_goal_dist = float(np.linalg.norm(self.goal_pos[:2] - new_pos[:2]))
@@ -443,7 +579,7 @@ class GuidedDroneEnv(gym.Env):
         reward -= 0.0001 * max(0.0, power - self.config.base_power)
 
         heading_err_norm = abs(self._wrap_angle_deg(self.current_heading - teacher["heading_deg"])) / 180.0
-        speed_err_norm = abs(target_speed - teacher["speed_mps"]) / max(speed_max - speed_min, 1e-6)
+        speed_err_norm = abs(applied_speed - teacher["speed_mps"]) / max(speed_max - speed_min, 1e-6)
         agl_err_norm = abs(desired_agl - teacher["agl_m"]) / max(self.max_clearance_agl - self.min_clearance_agl, 1.0)
 
         reward -= 0.001 * heading_err_norm
@@ -466,7 +602,7 @@ class GuidedDroneEnv(gym.Env):
             info["is_success"] = True
             info["terminated_reason"] = "goal_reached"
 
-        if not terminated and self.estimator.map.is_collision(new_x, new_y, desired_z, nfz_list_km=self._current_nfz_list()):
+        if not terminated and self.estimator.map.is_collision(new_x, new_y, new_z, nfz_list_km=self._current_nfz_list()):
             reward -= self.config.rl_collision_penalty
             terminated = True
             info["terminated_reason"] = "terrain_or_nfz"
@@ -521,6 +657,7 @@ class GuidedDroneEnv(gym.Env):
             "heading_err_norm": heading_err_norm,
             "speed_err_norm": speed_err_norm,
             "agl_err_norm": agl_err_norm,
+            "apas_intervened": apas_intervened,
         })
         self.telemetry_time_s.append(self.current_time)
         self.telemetry_power_w.append(power)
